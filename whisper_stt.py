@@ -269,8 +269,22 @@ def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     return (audio[indices_floor] * (1 - frac) + audio[indices_floor + 1] * frac).astype(np.float32)
 
 
+def _is_device_available(pa: pyaudio.PyAudio, device_index: int) -> bool:
+    """Check if a device is actually usable by trying to open a stream."""
+    try:
+        stream = pa.open(
+            format=FORMAT, channels=CHANNELS, rate=RECORD_RATE,
+            input=True, frames_per_buffer=CHUNK,
+            input_device_index=device_index,
+        )
+        stream.close()
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def list_microphones() -> list[tuple[int, str]]:
-    """List input devices, preferring WASAPI (best quality), deduped by name."""
+    """List active input devices, preferring WASAPI (best quality), deduped by name."""
     pa = pyaudio.PyAudio()
 
     # Find WASAPI host API index
@@ -288,7 +302,7 @@ def list_microphones() -> list[tuple[int, str]]:
             info = pa.get_device_info_by_index(i)
             if info["maxInputChannels"] > 0 and info["hostApi"] == wasapi_idx:
                 name = info["name"].strip()
-                if name not in seen_names:
+                if name not in seen_names and _is_device_available(pa, i):
                     seen_names.add(name)
                     mics.append((i, name))
 
@@ -303,12 +317,13 @@ def list_microphones() -> list[tuple[int, str]]:
             # Skip if already covered (substring match for truncated MME names)
             if any(name in s or s in name for s in seen_names):
                 continue
-            seen_names.add(name)
             # Clean up ugly Bluetooth driver paths
             if "@System32" in name or "bthhfenum" in name:
                 m = re.search(r'\(([A-Za-z][\w\s-]+)', name, re.DOTALL)
                 name = m.group(1).strip() if m else "Bluetooth"
-            mics.append((i, name))
+            if _is_device_available(pa, i):
+                seen_names.add(name)
+                mics.append((i, name))
 
     pa.terminate()
     return mics
@@ -335,26 +350,24 @@ class Recorder:
         if self.device_index is not None:
             kwargs["input_device_index"] = self.device_index
         self._stream = self._pa.open(**kwargs)
+        self._frames = []
+        self._recording = True
+        threading.Thread(target=self._read_loop, daemon=True).start()
 
     def _find_supported_rate(self) -> int:
         """Find a sample rate the device supports, trying common rates."""
         rates = [RECORD_RATE, 48000, 16000, 22050, 32000, 8000]
         for rate in rates:
             try:
-                kwargs = dict(
+                self._pa.open(
                     format=FORMAT, channels=CHANNELS, rate=rate,
-                    input=True, frames_per_buffer=CHUNK, output=False,
-                )
-                if self.device_index is not None:
-                    kwargs["input_device_index"] = self.device_index
-                test = self._pa.is_format_supported(**kwargs)
+                    input=True, frames_per_buffer=CHUNK,
+                    input_device_index=self.device_index,
+                ).close()
                 return rate
-            except ValueError:
+            except (ValueError, OSError):
                 continue
         return RECORD_RATE
-        self._frames = []
-        self._recording = True
-        threading.Thread(target=self._read_loop, daemon=True).start()
 
     def _read_loop(self):
         while self._recording and self._stream:
@@ -435,7 +448,12 @@ class WhisperSTT:
             prompt = prompt[:37] + "..."
 
         mics = list_microphones()
-        mic_items = []
+        mic_items = [
+            pystray.MenuItem(
+                f"{'> ' if mic_idx is None else '  '}System default",
+                self._make_mic_setter(None),
+            ),
+        ]
         for idx, name in mics:
             short = name[:50]
             mic_items.append(
