@@ -321,16 +321,37 @@ class Recorder:
         self._stream = None
         self._frames: list[bytes] = []
         self._recording = False
+        self._cached_rate: int | None = None
 
     def start(self):
         self._pa = pyaudio.PyAudio()
+        if self._cached_rate is None:
+            self._cached_rate = self._find_supported_rate()
+        self.rate = self._cached_rate
         kwargs = dict(
-            format=FORMAT, channels=CHANNELS, rate=RECORD_RATE,
+            format=FORMAT, channels=CHANNELS, rate=self.rate,
             input=True, frames_per_buffer=CHUNK,
         )
         if self.device_index is not None:
             kwargs["input_device_index"] = self.device_index
         self._stream = self._pa.open(**kwargs)
+
+    def _find_supported_rate(self) -> int:
+        """Find a sample rate the device supports, trying common rates."""
+        rates = [RECORD_RATE, 48000, 16000, 22050, 32000, 8000]
+        for rate in rates:
+            try:
+                kwargs = dict(
+                    format=FORMAT, channels=CHANNELS, rate=rate,
+                    input=True, frames_per_buffer=CHUNK, output=False,
+                )
+                if self.device_index is not None:
+                    kwargs["input_device_index"] = self.device_index
+                test = self._pa.is_format_supported(**kwargs)
+                return rate
+            except ValueError:
+                continue
+        return RECORD_RATE
         self._frames = []
         self._recording = True
         threading.Thread(target=self._read_loop, daemon=True).start()
@@ -357,7 +378,7 @@ class Recorder:
         raw = b"".join(self._frames)
         audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
         # Resample from mic native rate to whisper's 16kHz
-        return resample(audio, RECORD_RATE, WHISPER_RATE)
+        return resample(audio, self.rate, WHISPER_RATE)
 
 
 # ─── Paste ───────────────────────────────────────────────────────────────────
@@ -451,6 +472,7 @@ class WhisperSTT:
         def setter(icon, item):
             self.cfg["microphone"] = idx
             save_config(self.cfg)
+            self.recorder = Recorder(idx)
             self._refresh_menu()
             log.info(f"Micro -> {idx}")
         return setter
