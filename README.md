@@ -4,6 +4,18 @@ Lightweight push-to-talk speech-to-text for Windows. No cloud, no bloat — just
 
 Most speech-to-text tools are heavy, cloud-dependent, or come bundled with features you don't need. Whisper STT is a single Python script that sits in your system tray and does one thing well: transcribe your voice when you press a key.
 
+## Why this exists
+
+Most local speech-to-text solutions come with significant overhead — even when using the same model:
+
+| Stack | Runtime overhead | Requires | Notes |
+|-------|-----------------|----------|-------|
+| OpenAI Whisper (PyTorch) | ~300 MB (Python + PyTorch) | CUDA, ffmpeg | Full ML framework loaded at all times |
+| faster-whisper (CTranslate2) | ~200 MB (Python + CT2) | CUDA | Faster, but still needs a GPU runtime |
+| **Whisper STT (this project)** | **~30 MB (Python only)** | **Nothing extra** | **Direct DLL call via whisper.cpp** |
+
+All three run the same Whisper models with comparable accuracy. The difference is the stack: Whisper STT calls whisper.cpp directly via ctypes — no PyTorch, no CUDA runtime, no heavy ML framework. Just a single Python script, a DLL, and a model file.
+
 ## Features
 
 - **Push-to-talk** — hold a global hotkey (default `Win+Y`), speak, release to transcribe
@@ -23,8 +35,8 @@ Most speech-to-text tools are heavy, cloud-dependent, or come bundled with featu
 
 1. **Clone the repository:**
    ```
-   git clone https://github.com/YOUR_USERNAME/whisper-stt.git
-   cd whisper-stt
+   git clone https://github.com/qdonnars/ultralight-whisper-stt.git
+   cd ultralight-whisper-stt
    ```
 
 2. **Run the setup script** (downloads the model and whisper.cpp binaries):
