@@ -28,8 +28,33 @@ All three run the same Whisper models with comparable accuracy. The difference i
 ## Requirements
 
 - Windows 10 or later
-- Python 3.10+
-- A Vulkan-compatible GPU (for GPU acceleration) or any modern CPU
+- Python 3.10+ and Git (must be pre-installed)
+- **No admin rights needed** to install or run
+- Works on any modern CPU — a dedicated GPU is not required
+
+### Recommended specs
+
+| Hardware | Minimum | Recommended |
+|----------|---------|-------------|
+| RAM | 8 GB | 16 GB |
+| CPU | Any x86_64 | Intel Core Ultra / AMD Ryzen 7000+ |
+| GPU | Not required | Any Vulkan-compatible (iGPU or dedicated) |
+| Disk | 2 GB free | 2 GB free |
+
+> **Laptop-friendly:** Runs well on corporate laptops (Dell Latitude, Lenovo ThinkPad, etc.) without a dedicated GPU. Transcription takes ~3-5s per sentence on CPU vs ~1s with Vulkan GPU acceleration.
+
+### Alternative models
+
+The default model (`large-v3-turbo`) offers the best accuracy-to-speed ratio. For lower-end machines, you can use a smaller model by changing the `model` path in `config.yaml`:
+
+| Model | Size | RAM usage | Best for |
+|-------|------|-----------|----------|
+| `ggml-tiny.bin` | 75 MB | ~300 MB | Very low-end hardware, fast but less accurate |
+| `ggml-small.bin` | 466 MB | ~600 MB | Lightweight machines, good accuracy |
+| `ggml-medium.bin` | 1.5 GB | ~800 MB | Balanced accuracy and speed |
+| `ggml-large-v3-turbo.bin` | 1.5 GB | ~1.5 GB | Best accuracy, fast (default) |
+
+Download alternative models from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) and place them in the `whisper-cpp/` folder.
 
 ## Installation
 
