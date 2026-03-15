@@ -1,0 +1,20 @@
+# Whisper STT Configuration
+# Copy this file to config.yaml and adjust to your needs.
+
+# Language: "auto", "fr", "en", etc.
+language: auto
+
+# Prompt to guide transcription (jargon, proper nouns)
+prompt: ""
+
+# Push-to-talk hotkey (hold to record, release to transcribe)
+hotkey: win+y
+
+# Path to the model (relative to the script directory)
+model: whisper-cpp/ggml-large-v3-turbo.bin
+
+# Microphone: null = system default, otherwise the device index
+microphone: null
+
+# Auto-paste transcription into the active window
+auto_paste: true

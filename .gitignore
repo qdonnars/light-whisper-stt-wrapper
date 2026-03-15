@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Whisper-cpp binaries & model (downloaded by setup.py)
+whisper-cpp/
+
+# User config (use config.example.yaml as template)
+config.yaml
+
+# Logs
+whisper_stt.log
+
+# IDE / tools
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
