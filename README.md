@@ -60,8 +60,8 @@ Download alternative models from [Hugging Face](https://huggingface.co/ggerganov
 
 1. **Clone the repository:**
    ```
-   git clone https://github.com/qdonnars/ultralight-whisper-stt.git
-   cd ultralight-whisper-stt
+   git clone https://github.com/qdonnars/light-whisper-stt-wrapper.git
+   cd light-whisper-stt-wrapper
    ```
 
 2. **Run the setup script** (downloads the model and whisper.cpp binaries):
