@@ -14,16 +14,30 @@ import threading
 import time
 from pathlib import Path
 
-import numpy as np
+import array
+import struct
+
 import pyaudio
 import pyperclip
 import pystray
 import yaml
 from PIL import Image, ImageDraw
 
+# ─── Paths ───────────────────────────────────────────────────────────────────
+# When frozen (PyInstaller exe), use the exe's directory as base.
+# When running as script, use the script's directory.
+
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+CONFIG_PATH = BASE_DIR / "config.yaml"
+DLL_DIR = str(BASE_DIR / "whisper-cpp")
+
 # ─── Logging (file + console) ────────────────────────────────────────────────
 
-LOG_PATH = Path(__file__).resolve().parent / "whisper_stt.log"
+LOG_PATH = BASE_DIR / "whisper_stt.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -34,12 +48,6 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("whisper_stt")
-
-# ─── Paths ───────────────────────────────────────────────────────────────────
-
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.yaml"
-DLL_DIR = str(BASE_DIR / "whisper-cpp")
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -202,7 +210,7 @@ class WhisperEngine:
             null = ctypes.c_void_p(0)
             ctypes.memmove(params_ptr + offset, ctypes.byref(null), 8)
 
-    def transcribe(self, audio: np.ndarray, language: str = "auto",
+    def transcribe(self, audio: array.array, language: str = "auto",
                    prompt: str = "") -> str:
         self._pinned.clear()
         params = self._lib.whisper_full_default_params_by_ref(0)
@@ -215,11 +223,12 @@ class WhisperEngine:
         if prompt:
             self._set_ptr_field(params, _OFFSET_INITIAL_PROMPT, prompt.encode("utf-8"))
 
-        audio_f32 = audio.astype(np.float32)
+        # Convert array.array('f') to ctypes float pointer
+        c_audio = (ctypes.c_float * len(audio)).from_buffer(audio)
         ret = self._lib.whisper_full(
             self._ctx, params,
-            audio_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-            len(audio_f32),
+            ctypes.cast(c_audio, ctypes.POINTER(ctypes.c_float)),
+            len(audio),
         )
         if ret != 0:
             self._lib.whisper_free_params(params)
@@ -257,16 +266,20 @@ FORMAT = pyaudio.paInt16
 CHUNK = 1024
 
 
-def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+def resample(audio: array.array, src_rate: int, dst_rate: int) -> array.array:
     """Simple linear interpolation resample."""
     if src_rate == dst_rate:
         return audio
     ratio = dst_rate / src_rate
     n_out = int(len(audio) * ratio)
-    indices = np.arange(n_out) / ratio
-    indices_floor = np.clip(indices.astype(np.int64), 0, len(audio) - 2)
-    frac = indices - indices_floor
-    return (audio[indices_floor] * (1 - frac) + audio[indices_floor + 1] * frac).astype(np.float32)
+    last = len(audio) - 2
+    out = array.array("f", bytes(n_out * 4))
+    for i in range(n_out):
+        idx = i / ratio
+        j = min(int(idx), last)
+        frac = idx - j
+        out[i] = audio[j] * (1.0 - frac) + audio[j + 1] * frac
+    return out
 
 
 def _is_device_available(pa: pyaudio.PyAudio, device_index: int) -> bool:
@@ -377,7 +390,7 @@ class Recorder:
             except Exception:
                 break
 
-    def stop(self) -> np.ndarray | None:
+    def stop(self) -> array.array | None:
         self._recording = False
         if self._stream:
             self._stream.stop_stream()
@@ -389,7 +402,9 @@ class Recorder:
         if not self._frames:
             return None
         raw = b"".join(self._frames)
-        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        # Convert int16 samples to float32 [-1.0, 1.0]
+        samples = struct.unpack(f"<{len(raw) // 2}h", raw)
+        audio = array.array("f", (s / 32768.0 for s in samples))
         # Resample from mic native rate to whisper's 16kHz
         return resample(audio, self.rate, WHISPER_RATE)
 
@@ -555,6 +570,7 @@ class WhisperSTT:
 
     def _stop_and_transcribe(self):
         self.recording = False
+        self.processing = True
         self._set_state("processing")
         log.info("Transcribing...")
 
@@ -568,14 +584,16 @@ class WhisperSTT:
         else:
             self._set_state("idle")
 
-    def _transcribe_worker(self, audio: np.ndarray):
+    def _transcribe_worker(self, audio: array.array):
         try:
+            t0 = time.perf_counter()
             text = self.engine.transcribe(
                 audio,
                 language=self.cfg["language"],
                 prompt=self.cfg.get("prompt", ""),
             )
-            log.info(f"Result: {text}")
+            elapsed = time.perf_counter() - t0
+            log.info(f"Transcribed in {elapsed:.2f}s: {text}")
             if text and self.cfg.get("auto_paste", True):
                 paste_text(text)
         except Exception as e:
