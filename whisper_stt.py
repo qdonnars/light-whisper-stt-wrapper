@@ -655,7 +655,7 @@ class WhisperSTT:
 
         # Center on screen
         root.update_idletasks()
-        w, h = 420, 300
+        w, h = 420, 360
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -704,13 +704,21 @@ class WhisperSTT:
         lang_combo.set(self.cfg["language"])
         lang_combo.pack(side="right")
 
-        # Tray reminder
-        ttk.Separator(frame).pack(fill="x", pady=10)
+        # Usage reminder
+        ttk.Separator(frame).pack(fill="x", pady=8)
         ttk.Label(
             frame,
-            text="L'application se lance dans la barre des taches\n(icone en bas a droite).",
+            text="Comment ca marche :\n"
+                 "1. Maintenez le raccourci et parlez\n"
+                 "2. Relachez pour transcrire\n"
+                 "3. Le texte est automatiquement colle (Ctrl+V)",
+            justify="left", foreground="gray",
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text="L'application reste dans la barre des taches (en bas a droite).",
             justify="center", foreground="gray",
-        ).pack()
+        ).pack(pady=(6, 0))
 
         def on_ok():
             # Save settings
