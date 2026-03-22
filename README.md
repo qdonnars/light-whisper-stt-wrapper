@@ -56,7 +56,37 @@ The default model (`large-v3-turbo`) offers the best accuracy-to-speed ratio. Fo
 
 Download alternative models from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main) and place them in the `whisper-cpp/` folder.
 
-## Installation
+## Installation (standalone .exe)
+
+No Python needed — just download, extract, and run.
+
+1. **Download** the latest release `.zip` from the [Releases](https://github.com/qdonnars/ultralight-whisper-stt/releases) page.
+
+2. **Extract** the zip into a folder of your choice (e.g. `C:\Tools\whisper-stt`). You should have:
+   ```
+   whisper-stt/
+     whisper_stt.exe
+     config.example.yaml
+     _internal/            ← runtime files (do not modify)
+     whisper-cpp/
+       whisper.dll
+       ggml.dll
+       ggml-vulkan.dll
+       ggml-large-v3-turbo.bin   ← model (~1.5 GB)
+   ```
+
+3. **Create your config:** copy `config.example.yaml` to `config.yaml` in the same folder:
+   ```
+   copy config.example.yaml config.yaml
+   ```
+
+4. **Run** `whisper_stt.exe`. An icon appears in the system tray — you're ready to go.
+
+> **Windows SmartScreen:** On first launch, Windows may show a "Windows protected your PC" warning. Click **More info** then **Run anyway**. This happens because the exe is not code-signed.
+
+## Installation (from source)
+
+Requires Python 3.10+ and Git.
 
 1. **Clone the repository:**
    ```
@@ -95,14 +125,38 @@ The setup script downloads CPU-based binaries. For Vulkan GPU acceleration:
    ```
 3. Copy the resulting DLLs (`whisper.dll`, `ggml.dll`, `ggml-vulkan.dll`, etc.) into the `whisper-cpp/` folder, replacing the existing ones.
 
+### Building the .exe yourself
+
+1. Activate the virtual environment and install PyInstaller:
+   ```
+   .venv\Scripts\activate
+   pip install pyinstaller
+   ```
+
+2. Build with the provided spec file:
+   ```
+   pyinstaller whisper_stt.spec
+   ```
+
+3. The output is in `dist/whisper_stt/`. Copy the `whisper-cpp/` folder (DLLs + model) and `config.example.yaml` next to the exe:
+   ```
+   copy config.example.yaml dist\whisper_stt\
+   xcopy whisper-cpp dist\whisper_stt\whisper-cpp\ /E
+   ```
+
+4. Zip `dist/whisper_stt/` for distribution.
+
 ## Usage
 
-**Run from terminal:**
+**Standalone (.exe):**
+Double-click `whisper_stt.exe` — the app starts in the system tray.
+
+**From source:**
 ```
 python whisper_stt.py
 ```
 
-**Run silently in the background:**
+**Run silently in the background (source only):**
 Double-click `launch.vbs` — the app starts hidden with no console window.
 
 **Default hotkey:** Hold `Win+Y` to record, release to transcribe. The transcription is automatically copied to your clipboard and pasted.
