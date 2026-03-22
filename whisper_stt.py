@@ -640,6 +640,95 @@ class WhisperSTT:
                 return
             time.sleep(0.02)
 
+    # ── Startup dialog ──
+
+    def _show_startup_dialog(self):
+        """Show a setup dialog on launch to configure hotkey/mic and remind about tray."""
+        import tkinter as tk
+        from tkinter import ttk
+
+        mics = list_microphones()
+        root = tk.Tk()
+        root.title("Whisper STT")
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+
+        # Center on screen
+        root.update_idletasks()
+        w, h = 420, 300
+        x = (root.winfo_screenwidth() - w) // 2
+        y = (root.winfo_screenheight() - h) // 2
+        root.geometry(f"{w}x{h}+{x}+{y}")
+
+        frame = ttk.Frame(root, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Whisper STT", font=("Segoe UI", 14, "bold")).pack(pady=(0, 10))
+
+        # Hotkey
+        hk_frame = ttk.Frame(frame)
+        hk_frame.pack(fill="x", pady=4)
+        ttk.Label(hk_frame, text="Raccourci :").pack(side="left")
+        hotkey_var = tk.StringVar(value=self.cfg["hotkey"])
+        hotkey_entry = ttk.Entry(hk_frame, textvariable=hotkey_var, width=20)
+        hotkey_entry.pack(side="right")
+
+        # Microphone
+        mic_frame = ttk.Frame(frame)
+        mic_frame.pack(fill="x", pady=4)
+        ttk.Label(mic_frame, text="Micro :").pack(side="left")
+
+        mic_names = ["System default"] + [name for _, name in mics]
+        mic_indices = [None] + [idx for idx, _ in mics]
+        current_mic = self.cfg.get("microphone")
+        current_idx = 0
+        for i, idx in enumerate(mic_indices):
+            if idx == current_mic:
+                current_idx = i
+                break
+
+        mic_var = tk.StringVar(value=mic_names[current_idx])
+        mic_combo = ttk.Combobox(mic_frame, textvariable=mic_var,
+                                 values=mic_names, state="readonly", width=30)
+        mic_combo.current(current_idx)
+        mic_combo.pack(side="right")
+
+        # Language
+        lang_frame = ttk.Frame(frame)
+        lang_frame.pack(fill="x", pady=4)
+        ttk.Label(lang_frame, text="Langue :").pack(side="left")
+        lang_var = tk.StringVar(value=self.cfg["language"])
+        lang_combo = ttk.Combobox(lang_frame, textvariable=lang_var,
+                                  values=["auto", "fr", "en", "de", "es", "it"],
+                                  state="readonly", width=20)
+        lang_combo.set(self.cfg["language"])
+        lang_combo.pack(side="right")
+
+        # Tray reminder
+        ttk.Separator(frame).pack(fill="x", pady=10)
+        ttk.Label(
+            frame,
+            text="L'application se lance dans la barre des taches\n(icone en bas a droite).",
+            justify="center", foreground="gray",
+        ).pack()
+
+        def on_ok():
+            # Save settings
+            self.cfg["hotkey"] = hotkey_var.get().strip()
+            selected_mic = mic_combo.current()
+            self.cfg["microphone"] = mic_indices[selected_mic]
+            self.cfg["language"] = lang_var.get()
+            save_config(self.cfg)
+            self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
+            log.info(f"Config updated: hotkey={self.cfg['hotkey']}, "
+                     f"mic={self.cfg['microphone']}, lang={self.cfg['language']}")
+            root.destroy()
+
+        ttk.Button(frame, text="Demarrer", command=on_ok).pack(pady=(10, 0))
+
+        root.protocol("WM_DELETE_WINDOW", on_ok)
+        root.mainloop()
+
     # ── Run ──
 
     def _get_mic_name(self) -> str:
@@ -678,9 +767,29 @@ class WhisperSTT:
             menu=self._build_menu(),
         )
         log.info(f"Ready! Hold {self.cfg['hotkey']} to record, release to transcribe.")
+        self._show_startup_dialog()
         self.tray.run()
 
 
+def ensure_single_instance():
+    """Prevent multiple instances using a Windows named mutex."""
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, True, "WhisperSTT_SingleInstance")
+    ERROR_ALREADY_EXISTS = 183
+    if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        log.warning("Whisper STT is already running.")
+        user32.MessageBoxW(
+            None,
+            "Whisper STT est déjà en cours d'exécution.\n"
+            "Vérifiez l'icône dans la barre des tâches (en bas à droite).",
+            "Whisper STT",
+            0x40,  # MB_ICONINFORMATION
+        )
+        sys.exit(0)
+    return mutex
+
+
 if __name__ == "__main__":
+    _mutex = ensure_single_instance()
     app = WhisperSTT()
     app.run()
