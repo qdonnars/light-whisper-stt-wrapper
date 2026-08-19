@@ -619,7 +619,8 @@ class Recorder:
         if peak < SILENCE_PEAK:
             log.warning(
                 f"Recorded {duration:.1f}s but the signal is silent "
-                f"(peak {peak:.4f}) — wrong or muted microphone?"
+                f"(peak {peak:.4f}) — muted mic, or a noise gate closing on you "
+                f"(G HUB Blue VO!CE, NVIDIA Broadcast, Discord noise suppression)?"
             )
         else:
             log.info(f"Recorded {duration:.1f}s, peak {peak:.3f}")
