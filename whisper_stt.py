@@ -363,6 +363,8 @@ WHISPER_RATE = 16000   # whisper expects 16kHz
 CHANNELS = 1
 FORMAT = pyaudio.paInt16
 CHUNK = 1024
+SILENCE_PEAK = 0.01   # below this the recording is treated as silence
+PEAK_STRIDE = 16      # subsampling used for the level check
 
 
 def resample(audio: array.array, src_rate: int, dst_rate: int) -> array.array:
@@ -476,6 +478,17 @@ class Recorder:
         if self.device_index is not None:
             kwargs["input_device_index"] = self.device_index
         self._stream = self._pa.open(**kwargs)
+        # Log the device actually opened: with microphone=null this follows the
+        # Windows default, which can silently change mid-session (headset going
+        # to sleep, another app grabbing the input) and yield silent audio.
+        try:
+            idx = self.device_index
+            if idx is None:
+                idx = self._pa.get_default_input_device_info()["index"]
+            info = self._pa.get_device_info_by_index(idx)
+            log.info(f"Capturing from [{idx}] {info['name'].strip()} @ {self.rate} Hz")
+        except Exception as e:
+            log.warning(f"Could not identify the capture device: {e}")
         self._frames = []
         self._recording = True
         threading.Thread(target=self._read_loop, daemon=True).start()
@@ -500,7 +513,10 @@ class Recorder:
             try:
                 data = self._stream.read(CHUNK, exception_on_overflow=False)
                 self._frames.append(data)
-            except Exception:
+            except Exception as e:
+                # Losing the device mid-recording (headset sleeping, another app
+                # taking the input) used to end up as a silent empty result.
+                log.error(f"Capture stopped after {len(self._frames)} chunks: {e}")
                 break
 
     def stop(self) -> array.array | None:
@@ -513,10 +529,25 @@ class Recorder:
             self._pa.terminate()
             self._pa = None
         if not self._frames:
+            log.warning("No audio captured at all")
             return None
         raw = b"".join(self._frames)
         samples = struct.unpack(f"<{len(raw) // 2}h", raw)
         audio = array.array("f", (s / 32768.0 for s in samples))
+
+        # Report the input level: an empty transcription is almost always a
+        # silent mic, and without this the log cannot tell the two apart.
+        duration = len(audio) / self.rate
+        # Subsampled: scanning every sample costs ~215 ms on a 2 min take, and
+        # this only has to answer "is the mic dead?", not measure the signal.
+        peak = max((abs(s) for s in audio[::PEAK_STRIDE]), default=0.0)
+        if peak < SILENCE_PEAK:
+            log.warning(
+                f"Recorded {duration:.1f}s but the signal is silent "
+                f"(peak {peak:.4f}) — wrong or muted microphone?"
+            )
+        else:
+            log.info(f"Recorded {duration:.1f}s, peak {peak:.3f}")
         return resample(audio, self.rate, WHISPER_RATE)
 
 
@@ -559,6 +590,7 @@ COLORS = {
     "idle": "#4a9eff",
     "recording": "#ff4444",
     "processing": "#ffaa00",
+    "empty": "#888888",   # transcription came back empty (silent mic?)
 }
 
 
@@ -581,6 +613,7 @@ class WhisperSTT:
         self.tray: pystray.Icon | None = None
         self.engine: WhisperEngine | None = None
         self._running = True
+        self._empty_result = False
         self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
 
     def _load_engine(self):
@@ -697,7 +730,10 @@ class WhisperSTT:
             self.tray.icon = make_icon(COLORS[state])
             lang = self.cfg["language"]
             mic = self._get_mic_name()[:30]
-            if state == "idle":
+            if state == "idle" and self._empty_result:
+                self.tray.icon = make_icon(COLORS["empty"])
+                self.tray.title = "Whisper STT - rien transcrit (micro muet ?)"
+            elif state == "idle":
                 self.tray.title = f"Whisper STT [{lang}] - {mic}"
             elif state == "recording":
                 self.tray.title = "Whisper STT - RECORDING..."
@@ -708,6 +744,7 @@ class WhisperSTT:
 
     def _start_recording(self):
         self.recording = True
+        self._empty_result = False
         self._set_state("recording")
         log.info("Recording...")
         self.recorder = Recorder(device_index=self.cfg.get("microphone"))
@@ -739,7 +776,13 @@ class WhisperSTT:
             )
             elapsed = time.perf_counter() - t0
             log.info(f"Transcribed in {elapsed:.2f}s: {text}")
-            deliver_text(text, auto_paste=self.cfg.get("auto_paste", False))
+            if text.strip():
+                deliver_text(text, auto_paste=self.cfg.get("auto_paste", False))
+            else:
+                # Silently doing nothing here leaves the previous transcription
+                # on the clipboard, which reads as "the app stopped working".
+                log.warning("Empty transcription — clipboard left untouched")
+                self._empty_result = True
         except Exception as e:
             log.error(f"Transcription: {e}")
         finally:
