@@ -409,18 +409,35 @@ def _is_virtual_mic(name: str) -> bool:
     return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
 
 
-def _default_or_best_physical() -> tuple[int | None, str | None]:
-    """Follow the Windows default, unless it is a virtual mic.
+def _find_by_name(wanted: str, mics: list[tuple[int, str]]) -> tuple[int, str] | None:
+    """Locate a device by name, tolerating the truncation some host APIs apply."""
+    for idx, name in mics:
+        if name == wanted:
+            return idx, name
+    for idx, name in mics:
+        if name.startswith(wanted[:20]) or wanted.startswith(name[:20]):
+            return idx, name
+    return None
 
-    _is_virtual_mic only ever filtered the picker list, so 'System default'
-    still opened whatever Windows pointed at -- including Steam Streaming Mic,
-    which records silence and yields empty transcriptions. Games and streaming
-    tools set themselves as the default input, so this is not a rare case.
+
+def _default_or_best_physical() -> tuple[int | None, str | None]:
+    """Resolve 'System default' to a WASAPI endpoint, avoiding virtual mics.
+
+    Returning None here means PortAudio picks its own default, and on Windows
+    that is the *MME* device -- the legacy emulation layer. MME reports this
+    mic at 44100 Hz while the endpoint actually runs at 48000 Hz in WASAPI, and
+    once another app reconfigures the endpoint, MME hands out silence instead
+    of failing. Windows' own dictation goes straight to WASAPI, which is why it
+    kept working while this app recorded 43 seconds of digital zeroes.
+
+    list_microphones() is already WASAPI-first and drops virtual devices, so
+    routing the default through it fixes both problems at once.
     """
     try:
         pa = pyaudio.PyAudio()
         try:
             info = pa.get_default_input_device_info()
+            api = pa.get_host_api_info_by_index(info["hostApi"])["name"]
         finally:
             pa.terminate()
     except Exception as e:
@@ -428,18 +445,23 @@ def _default_or_best_physical() -> tuple[int | None, str | None]:
         return None, None
 
     name = info["name"].strip()
-    if not _is_virtual_mic(name):
-        return None, None  # let PortAudio pick the default itself
+    mics = list_microphones()
 
-    # list_microphones() is WASAPI-first and already drops virtual devices,
-    # so its first entry is the best physical microphone available.
-    best = next(iter(list_microphones()), None)
-    if best is None:
-        log.error(f"Windows default is a virtual mic {name!r} and no physical mic was found")
+    if _is_virtual_mic(name):
+        best = next(iter(mics), None)
+        if best is None:
+            log.error(f"Windows default is a virtual mic {name!r} and no physical mic was found")
+            return None, None
+        log.warning(f"Windows default is a virtual mic {name!r} — using {best[1]!r} instead")
+        return best
+
+    found = _find_by_name(name, mics)
+    if found is None:
+        log.warning(f"Windows default {name!r} has no usable endpoint; letting PortAudio choose")
         return None, None
-    idx, real = best
-    log.warning(f"Windows default is a virtual mic {name!r} — using {real!r} instead")
-    return idx, real
+    if api != "Windows WASAPI":
+        log.info(f"Windows default {name!r} is exposed via {api}; using its WASAPI endpoint instead")
+    return found
 
 
 def resolve_microphone(wanted) -> tuple[int | None, str | None]:
@@ -462,14 +484,9 @@ def resolve_microphone(wanted) -> tuple[int | None, str | None]:
                 return idx, name
         log.warning(f"Saved microphone index {wanted} no longer exists")
         return None, None
-    for idx, name in mics:
-        if name == wanted:
-            return idx, name
-    # Tolerate the truncated names some host APIs report.
-    for idx, name in mics:
-        if name.startswith(wanted[:20]) or wanted.startswith(name[:20]):
-            log.info(f"Microphone {wanted!r} matched loosely to {name!r}")
-            return idx, name
+    found = _find_by_name(wanted, mics)
+    if found is not None:
+        return found
     log.warning(
         f"Microphone {wanted!r} is not available (asleep? disconnected?) — "
         f"falling back to the Windows default. Seen: {[n for _, n in mics]}"
@@ -569,8 +586,22 @@ class Recorder:
         threading.Thread(target=self._read_loop, daemon=True).start()
 
     def _find_supported_rate(self) -> int:
-        """Find a sample rate the device supports, trying common rates."""
-        rates = [RECORD_RATE, 48000, 16000, 22050, 32000, 8000]
+        """Find a sample rate the device supports, its own native rate first.
+
+        Hardcoding 44100 first meant opening a 48 kHz WASAPI endpoint at the
+        wrong rate and relying on the host API to resample -- which is exactly
+        where MME starts returning silence.
+        """
+        native = None
+        try:
+            idx = self.device_index
+            if idx is None:
+                idx = self._pa.get_default_input_device_info()["index"]
+            native = int(self._pa.get_device_info_by_index(idx)["defaultSampleRate"])
+        except Exception:
+            pass
+        rates = [r for r in (native, RECORD_RATE, 48000, 16000, 22050, 32000, 8000) if r]
+        rates = list(dict.fromkeys(rates))  # keep order, drop duplicates
         for rate in rates:
             try:
                 self._pa.open(
