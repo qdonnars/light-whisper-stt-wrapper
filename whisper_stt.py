@@ -57,7 +57,9 @@ DEFAULT_CONFIG = {
     "hotkey": "win+y",
     "model": None,  # auto-detected
     "microphone": None,
-    "auto_paste": True,
+    # Off by default: the transcription always lands on the clipboard, and you
+    # choose where to paste it (and it stays in the Win+V history).
+    "auto_paste": False,
 }
 
 # Models in preference order (best first)
@@ -534,14 +536,21 @@ def _copy_to_clipboard(text: str, attempts: int = 5) -> bool:
     return False
 
 
-def paste_text(text: str):
+def deliver_text(text: str, auto_paste: bool):
+    """Always put the transcription on the clipboard; only inject Ctrl+V if asked.
+
+    The clipboard write must never be conditional: with auto_paste off the text
+    would otherwise go nowhere at all.
+    """
     if not text:
         return
     if not _copy_to_clipboard(text):
-        log.error("Could not write to the clipboard — text NOT pasted (see above)")
+        log.error("Could not write to the clipboard — transcription LOST (see above)")
         return
-    time.sleep(0.05)
-    send_ctrl_v()
+    log.info("Copied to clipboard")
+    if auto_paste:
+        time.sleep(0.05)
+        send_ctrl_v()
 
 
 # ─── System tray ─────────────────────────────────────────────────────────────
@@ -614,6 +623,11 @@ class WhisperSTT:
             pystray.MenuItem(f"Prompt: {prompt}", self._on_edit_prompt),
             pystray.MenuItem("Micro", pystray.Menu(*mic_items)),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(
+                "Coller automatiquement (Ctrl+V)",
+                self._on_toggle_auto_paste,
+                checked=lambda item: self.cfg.get("auto_paste", False),
+            ),
             pystray.MenuItem(f"Hotkey: {self.cfg['hotkey']}", None, enabled=False),
             pystray.MenuItem("Quitter", self._on_quit),
         )
@@ -634,6 +648,12 @@ class WhisperSTT:
             self._refresh_menu()
             log.info(f"Micro -> {idx}")
         return setter
+
+    def _on_toggle_auto_paste(self, icon, item):
+        self.cfg["auto_paste"] = not self.cfg.get("auto_paste", False)
+        save_config(self.cfg)
+        self._refresh_menu()
+        log.info(f"Auto-paste -> {self.cfg['auto_paste']}")
 
     def _on_edit_prompt(self, icon, item):
         threading.Thread(target=self._prompt_dialog, daemon=True).start()
@@ -719,8 +739,7 @@ class WhisperSTT:
             )
             elapsed = time.perf_counter() - t0
             log.info(f"Transcribed in {elapsed:.2f}s: {text}")
-            if text and self.cfg.get("auto_paste", True):
-                paste_text(text)
+            deliver_text(text, auto_paste=self.cfg.get("auto_paste", False))
         except Exception as e:
             log.error(f"Transcription: {e}")
         finally:

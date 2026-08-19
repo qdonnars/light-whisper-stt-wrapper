@@ -17,4 +17,4 @@ model: whisper-cpp/ggml-large-v3-turbo.bin
 microphone: null
 
 # Auto-paste transcription into the active window
-auto_paste: true
+auto_paste: false

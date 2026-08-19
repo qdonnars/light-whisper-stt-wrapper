@@ -180,7 +180,7 @@ All settings are in `config.yaml`:
 | `hotkey` | `win+y` | Push-to-talk hotkey |
 | `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
 | `microphone` | `null` | Microphone device index (`null` = system default) |
-| `auto_paste` | `true` | Automatically paste transcription into active window |
+| `auto_paste` | `false` | Also inject Ctrl+V after copying. Off by default: the text always goes to the clipboard, you choose where to paste it |
 
 ## License
 
