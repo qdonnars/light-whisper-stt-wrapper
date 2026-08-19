@@ -55,18 +55,38 @@ DEFAULT_CONFIG = {
     "language": "auto",
     "prompt": "",
     "hotkey": "win+y",
-    "model": "whisper-cpp/ggml-large-v3-turbo.bin",
+    "model": None,  # auto-detected
     "microphone": None,
     "auto_paste": True,
 }
+
+# Models in preference order (best first)
+_MODEL_CANDIDATES = [
+    "whisper-cpp/ggml-large-v3-turbo.bin",
+    "whisper-cpp/ggml-medium.bin",
+    "whisper-cpp/ggml-small.bin",
+    "whisper-cpp/ggml-tiny.bin",
+]
+
+
+def _detect_model() -> str:
+    """Find the first available model file."""
+    for candidate in _MODEL_CANDIDATES:
+        if (BASE_DIR / candidate).exists():
+            return candidate
+    return _MODEL_CANDIDATES[0]  # fallback, will error later with a clear message
 
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
-        return {**DEFAULT_CONFIG, **cfg}
-    return dict(DEFAULT_CONFIG)
+    else:
+        cfg = {}
+    merged = {**DEFAULT_CONFIG, **cfg}
+    if not merged.get("model"):
+        merged["model"] = _detect_model()
+    return merged
 
 
 def save_config(cfg: dict):
@@ -115,45 +135,122 @@ def parse_hotkey(hotkey_str: str) -> tuple[int, int]:
     return mods, vk
 
 
+KEYEVENTF_KEYUP = 0x0002
+INPUT_KEYBOARD = 1
+
+# Modifiers that must not be held when we inject Ctrl+V. A screenshot is
+# Win+Shift+S: if Win/Shift are still down, Windows reads the injection as
+# Win+Ctrl+Shift+V and nothing is pasted. Same for our own win+y hotkey.
+_MODIFIER_VKS = (
+    0xA0, 0xA1,  # LShift, RShift
+    0xA2, 0xA3,  # LCtrl, RCtrl
+    0xA4, 0xA5,  # LAlt, RAlt
+    0x5B, 0x5C,  # LWin, RWin
+)
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", w.WORD),
+        ("wScan", w.WORD),
+        ("dwFlags", w.DWORD),
+        ("time", w.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", w.LONG),
+        ("dy", w.LONG),
+        ("mouseData", w.DWORD),
+        ("dwFlags", w.DWORD),
+        ("time", w.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", w.DWORD), ("wParamL", w.WORD), ("wParamH", w.WORD)]
+
+
+class INPUT(ctypes.Structure):
+    """Must mirror the full Win32 INPUT union (40 bytes on x64).
+
+    Declaring only KEYBDINPUT makes the struct 32 bytes; SendInput validates
+    cbSize against its own sizeof(INPUT) and silently returns 0 — no key is
+    ever injected. That is not a cosmetic detail, it breaks auto-paste.
+    """
+    class _INPUT(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
+    _fields_ = [
+        ("type", w.DWORD),
+        ("_input", _INPUT),
+    ]
+
+
+_EXPECTED_INPUT_SIZE = 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28
+if ctypes.sizeof(INPUT) != _EXPECTED_INPUT_SIZE:
+    # Not an assert: it must survive python -O, since the failure is silent.
+    raise RuntimeError(
+        f"sizeof(INPUT)={ctypes.sizeof(INPUT)}, expected {_EXPECTED_INPUT_SIZE}; "
+        "SendInput would reject it and auto-paste would do nothing"
+    )
+
+
+def _make_key(vk: int, flags: int = 0) -> INPUT:
+    inp = INPUT()
+    inp.type = INPUT_KEYBOARD
+    inp._input.ki.wVk = vk
+    inp._input.ki.dwFlags = flags
+    return inp
+
+
+def _send(inputs: list) -> bool:
+    if not inputs:
+        return True
+    arr = (INPUT * len(inputs))(*inputs)
+    ctypes.set_last_error(0)
+    sent = user32.SendInput(len(inputs), ctypes.byref(arr), ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        log.error(
+            f"SendInput injected {sent}/{len(inputs)} events "
+            f"(GetLastError={ctypes.get_last_error()}) — keystrokes may be blocked"
+        )
+        return False
+    return True
+
+
+def _held_modifiers() -> list[int]:
+    return [vk for vk in _MODIFIER_VKS if user32.GetAsyncKeyState(vk) & 0x8000]
+
+
+def wait_modifiers_released(timeout: float = 1.5) -> list[int]:
+    """Give the user a moment to let go. Returns the modifiers still held."""
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        if not _held_modifiers():
+            return []
+        time.sleep(0.02)
+    return _held_modifiers()
+
+
 def send_ctrl_v():
-    """Simulate Ctrl+V using Windows SendInput API."""
+    """Simulate Ctrl+V, first releasing any modifier the user still holds."""
+    stuck = wait_modifiers_released()
+    if stuck:
+        log.info(f"Forcing release of stuck modifiers: {[hex(v) for v in stuck]}")
+        _send([_make_key(vk, KEYEVENTF_KEYUP) for vk in stuck])
+        time.sleep(0.02)
+
     VK_CONTROL = 0x11
     VK_V = 0x56
-    KEYEVENTF_KEYUP = 0x0002
-
-    INPUT_KEYBOARD = 1
-
-    class KEYBDINPUT(ctypes.Structure):
-        _fields_ = [
-            ("wVk", w.WORD),
-            ("wScan", w.WORD),
-            ("dwFlags", w.DWORD),
-            ("time", w.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-        ]
-
-    class INPUT(ctypes.Structure):
-        class _INPUT(ctypes.Union):
-            _fields_ = [("ki", KEYBDINPUT)]
-        _fields_ = [
-            ("type", w.DWORD),
-            ("_input", _INPUT),
-        ]
-
-    def make_key(vk, flags=0):
-        inp = INPUT()
-        inp.type = INPUT_KEYBOARD
-        inp._input.ki.wVk = vk
-        inp._input.ki.dwFlags = flags
-        return inp
-
-    inputs = (INPUT * 4)(
-        make_key(VK_CONTROL),
-        make_key(VK_V),
-        make_key(VK_V, KEYEVENTF_KEYUP),
-        make_key(VK_CONTROL, KEYEVENTF_KEYUP),
-    )
-    user32.SendInput(4, ctypes.byref(inputs), ctypes.sizeof(INPUT))
+    return _send([
+        _make_key(VK_CONTROL),
+        _make_key(VK_V),
+        _make_key(VK_V, KEYEVENTF_KEYUP),
+        _make_key(VK_CONTROL, KEYEVENTF_KEYUP),
+    ])
 
 
 # ─── Whisper DLL bindings ────────────────────────────────────────────────────
@@ -296,6 +393,18 @@ def _is_device_available(pa: pyaudio.PyAudio, device_index: int) -> bool:
         return False
 
 
+_VIRTUAL_MIC_KEYWORDS = (
+    "steam streaming", "nvidia broadcast", "vb-audio", "vb-cable",
+    "voicemeeter", "cable input", "cable output", "virtual audio",
+    "obs virtual", "discord", "wave link",
+)
+
+
+def _is_virtual_mic(name: str) -> bool:
+    lower = name.lower()
+    return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
+
+
 def list_microphones() -> list[tuple[int, str]]:
     """List active input devices, preferring WASAPI (best quality), deduped by name."""
     pa = pyaudio.PyAudio()
@@ -315,6 +424,8 @@ def list_microphones() -> list[tuple[int, str]]:
             info = pa.get_device_info_by_index(i)
             if info["maxInputChannels"] > 0 and info["hostApi"] == wasapi_idx:
                 name = info["name"].strip()
+                if _is_virtual_mic(name):
+                    continue
                 if name not in seen_names and _is_device_available(pa, i):
                     seen_names.add(name)
                     mics.append((i, name))
@@ -325,7 +436,7 @@ def list_microphones() -> list[tuple[int, str]]:
         info = pa.get_device_info_by_index(i)
         if info["maxInputChannels"] > 0:
             name = info["name"].strip()
-            if name.startswith(skip_prefixes):
+            if name.startswith(skip_prefixes) or _is_virtual_mic(name):
                 continue
             # Skip if already covered (substring match for truncated MME names)
             if any(name in s or s in name for s in seen_names):
@@ -402,19 +513,33 @@ class Recorder:
         if not self._frames:
             return None
         raw = b"".join(self._frames)
-        # Convert int16 samples to float32 [-1.0, 1.0]
         samples = struct.unpack(f"<{len(raw) // 2}h", raw)
         audio = array.array("f", (s / 32768.0 for s in samples))
-        # Resample from mic native rate to whisper's 16kHz
         return resample(audio, self.rate, WHISPER_RATE)
 
 
 # ─── Paste ───────────────────────────────────────────────────────────────────
 
+def _copy_to_clipboard(text: str, attempts: int = 5) -> bool:
+    """Copy with retries: the clipboard is often locked briefly by the snipping
+    tool, clipboard history or a password manager, and pyperclip then raises."""
+    for i in range(attempts):
+        try:
+            pyperclip.copy(text)
+            if pyperclip.paste() == text:
+                return True
+        except Exception as e:
+            log.warning(f"Clipboard busy (try {i + 1}/{attempts}): {e}")
+        time.sleep(0.1)
+    return False
+
+
 def paste_text(text: str):
     if not text:
         return
-    pyperclip.copy(text)
+    if not _copy_to_clipboard(text):
+        log.error("Could not write to the clipboard — text NOT pasted (see above)")
+        return
     time.sleep(0.05)
     send_ctrl_v()
 
