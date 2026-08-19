@@ -13,7 +13,6 @@ hotkey: win+y
 # Path to the model (relative to the script directory)
 model: whisper-cpp/ggml-large-v3-turbo.bin
 
-# Microphone: null = system default, otherwise the device index
 # Input device NAME (not an index), e.g. "Microphone (PRO X 2 LIGHTSPEED)".
 # null follows the Windows default.
 microphone: null
