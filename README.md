@@ -109,7 +109,7 @@ Requires Python 3.10+ and Git.
    pip install -r requirements.txt
    ```
 
-4. **Edit `config.yaml`** if you want to change the hotkey, language, or microphone.
+4. **Edit `config.yaml`** if you want to change the hotkey or language. The microphone follows the Windows default; override it from the tray menu if needed.
 
 ### Vulkan GPU acceleration (optional)
 

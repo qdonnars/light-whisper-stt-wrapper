@@ -409,6 +409,39 @@ def _is_virtual_mic(name: str) -> bool:
     return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
 
 
+def _default_or_best_physical() -> tuple[int | None, str | None]:
+    """Follow the Windows default, unless it is a virtual mic.
+
+    _is_virtual_mic only ever filtered the picker list, so 'System default'
+    still opened whatever Windows pointed at -- including Steam Streaming Mic,
+    which records silence and yields empty transcriptions. Games and streaming
+    tools set themselves as the default input, so this is not a rare case.
+    """
+    try:
+        pa = pyaudio.PyAudio()
+        try:
+            info = pa.get_default_input_device_info()
+        finally:
+            pa.terminate()
+    except Exception as e:
+        log.warning(f"No Windows default input device: {e}")
+        return None, None
+
+    name = info["name"].strip()
+    if not _is_virtual_mic(name):
+        return None, None  # let PortAudio pick the default itself
+
+    # list_microphones() is WASAPI-first and already drops virtual devices,
+    # so its first entry is the best physical microphone available.
+    best = next(iter(list_microphones()), None)
+    if best is None:
+        log.error(f"Windows default is a virtual mic {name!r} and no physical mic was found")
+        return None, None
+    idx, real = best
+    log.warning(f"Windows default is a virtual mic {name!r} — using {real!r} instead")
+    return idx, real
+
+
 def resolve_microphone(wanted) -> tuple[int | None, str | None]:
     """Turn the configured microphone into an index valid *right now*.
 
@@ -420,7 +453,7 @@ def resolve_microphone(wanted) -> tuple[int | None, str | None]:
     the index up again for every take.
     """
     if wanted is None:
-        return None, None  # follow the Windows default
+        return _default_or_best_physical()
     mics = list_microphones()
     if isinstance(wanted, int):
         # Config written by an older version: migrate index -> name.
@@ -886,11 +919,10 @@ class WhisperSTT:
     # ── Startup dialog ──
 
     def _show_startup_dialog(self):
-        """Show a setup dialog on launch to configure hotkey/mic and remind about tray."""
+        """Setup dialog on launch: hotkey, language, and a reminder about the tray."""
         import tkinter as tk
         from tkinter import ttk
 
-        mics = list_microphones()
         root = tk.Tk()
         root.title("Whisper STT")
         root.resizable(False, False)
@@ -916,26 +948,10 @@ class WhisperSTT:
         hotkey_entry = ttk.Entry(hk_frame, textvariable=hotkey_var, width=20)
         hotkey_entry.pack(side="right")
 
-        # Microphone
-        mic_frame = ttk.Frame(frame)
-        mic_frame.pack(fill="x", pady=4)
-        ttk.Label(mic_frame, text="Micro :").pack(side="left")
-
-        mic_names = ["System default"] + [name for _, name in mics]
-        # Names, not indices: what gets saved must survive a device list change.
-        mic_values = [None] + [name for _, name in mics]
-        _, current_mic = resolve_microphone(self.cfg.get("microphone"))
-        current_idx = 0
-        for i, name in enumerate(mic_values):
-            if name == current_mic:
-                current_idx = i
-                break
-
-        mic_var = tk.StringVar(value=mic_names[current_idx])
-        mic_combo = ttk.Combobox(mic_frame, textvariable=mic_var,
-                                 values=mic_names, state="readonly", width=30)
-        mic_combo.current(current_idx)
-        mic_combo.pack(side="right")
+        # No microphone picker here on purpose: Windows already owns that
+        # choice, and asking at launch made people pick a device before they
+        # had any reason to. The tray menu keeps it as an override for when
+        # the Windows default is the wrong one.
 
         # Language
         lang_frame = ttk.Frame(frame)
@@ -967,13 +983,11 @@ class WhisperSTT:
         def on_ok():
             # Save settings
             self.cfg["hotkey"] = hotkey_var.get().strip()
-            selected_mic = mic_combo.current()
-            self.cfg["microphone"] = mic_values[selected_mic]
             self.cfg["language"] = lang_var.get()
             save_config(self.cfg)
             self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
             log.info(f"Config updated: hotkey={self.cfg['hotkey']}, "
-                     f"mic={self.cfg['microphone']}, lang={self.cfg['language']}")
+                     f"lang={self.cfg['language']}")
             root.destroy()
 
         ttk.Button(frame, text="Demarrer", command=on_ok).pack(pady=(10, 0))
