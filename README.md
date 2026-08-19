@@ -179,7 +179,7 @@ All settings are in `config.yaml`:
 | `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns) |
 | `hotkey` | `win+y` | Push-to-talk hotkey |
 | `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
-| `microphone` | `null` | Microphone device index (`null` = system default) |
+| `microphone` | `null` | Input device **name** (e.g. `Microphone (PRO X 2 LIGHTSPEED)`). `null` follows the Windows default. Stored as a name, not an index: PortAudio indices change when devices sleep or reconnect |
 | `auto_paste` | `false` | Also inject Ctrl+V after copying. Off by default: the text always goes to the clipboard, you choose where to paste it |
 
 ## License

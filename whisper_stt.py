@@ -409,6 +409,41 @@ def _is_virtual_mic(name: str) -> bool:
     return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
 
 
+def resolve_microphone(wanted) -> tuple[int | None, str | None]:
+    """Turn the configured microphone into an index valid *right now*.
+
+    PortAudio freezes its device list at Pa_Initialize() and its own docs warn
+    that after a refresh "all device indexes may refer to different devices".
+    A saved index is therefore meaningless across a headset sleeping, a
+    Bluetooth device connecting, or a driver reload: index 18 is the PRO X 2
+    today and the Steam Streaming Mic tomorrow. So we save the *name* and look
+    the index up again for every take.
+    """
+    if wanted is None:
+        return None, None  # follow the Windows default
+    mics = list_microphones()
+    if isinstance(wanted, int):
+        # Config written by an older version: migrate index -> name.
+        for idx, name in mics:
+            if idx == wanted:
+                return idx, name
+        log.warning(f"Saved microphone index {wanted} no longer exists")
+        return None, None
+    for idx, name in mics:
+        if name == wanted:
+            return idx, name
+    # Tolerate the truncated names some host APIs report.
+    for idx, name in mics:
+        if name.startswith(wanted[:20]) or wanted.startswith(name[:20]):
+            log.info(f"Microphone {wanted!r} matched loosely to {name!r}")
+            return idx, name
+    log.warning(
+        f"Microphone {wanted!r} is not available (asleep? disconnected?) — "
+        f"falling back to the Windows default. Seen: {[n for _, n in mics]}"
+    )
+    return None, None
+
+
 def list_microphones() -> list[tuple[int, str]]:
     """List active input devices, preferring WASAPI (best quality), deduped by name."""
     pa = pyaudio.PyAudio()
@@ -458,8 +493,9 @@ def list_microphones() -> list[tuple[int, str]]:
 
 
 class Recorder:
-    def __init__(self, device_index: int | None = None):
+    def __init__(self, device_index: int | None = None, expected_name: str | None = None):
         self.device_index = device_index
+        self.expected_name = expected_name
         self._pa: pyaudio.PyAudio | None = None
         self._stream = None
         self._frames: list[bytes] = []
@@ -486,7 +522,13 @@ class Recorder:
             if idx is None:
                 idx = self._pa.get_default_input_device_info()["index"]
             info = self._pa.get_device_info_by_index(idx)
-            log.info(f"Capturing from [{idx}] {info['name'].strip()} @ {self.rate} Hz")
+            opened = info["name"].strip()
+            log.info(f"Capturing from [{idx}] {opened} @ {self.rate} Hz")
+            if self.expected_name and opened != self.expected_name:
+                log.warning(
+                    f"Expected {self.expected_name!r} but the index now points to "
+                    f"{opened!r} — the device list shifted under us"
+                )
         except Exception as e:
             log.warning(f"Could not identify the capture device: {e}")
         self._frames = []
@@ -615,6 +657,17 @@ class WhisperSTT:
         self._running = True
         self._empty_result = False
         self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
+        self._migrate_microphone_setting()
+
+    def _migrate_microphone_setting(self):
+        """Rewrite a config still holding a device index into a device name."""
+        wanted = self.cfg.get("microphone")
+        if not isinstance(wanted, int):
+            return
+        _, name = resolve_microphone(wanted)
+        self.cfg["microphone"] = name
+        save_config(self.cfg)
+        log.info(f"Migrated microphone index {wanted} to {name or 'System default'}")
 
     def _load_engine(self):
         log.info("Loading model (this takes a few seconds)...")
@@ -624,7 +677,7 @@ class WhisperSTT:
 
     def _build_menu(self) -> pystray.Menu:
         lang = self.cfg["language"]
-        mic_idx = self.cfg.get("microphone")
+        _, mic_name = resolve_microphone(self.cfg.get("microphone"))
         prompt = self.cfg.get("prompt", "") or "(vide)"
         if len(prompt) > 40:
             prompt = prompt[:37] + "..."
@@ -632,16 +685,16 @@ class WhisperSTT:
         mics = list_microphones()
         mic_items = [
             pystray.MenuItem(
-                f"{'> ' if mic_idx is None else '  '}System default",
+                f"{'> ' if mic_name is None else '  '}System default",
                 self._make_mic_setter(None),
             ),
         ]
-        for idx, name in mics:
+        for _idx, name in mics:
             short = name[:50]
             mic_items.append(
                 pystray.MenuItem(
-                    f"{'> ' if idx == mic_idx else '  '}{short}",
-                    self._make_mic_setter(idx),
+                    f"{'> ' if name == mic_name else '  '}{short}",
+                    self._make_mic_setter(name),
                 )
             )
         if not mic_items:
@@ -673,13 +726,14 @@ class WhisperSTT:
             log.info(f"Langue -> {lang}")
         return setter
 
-    def _make_mic_setter(self, idx: int):
+    def _make_mic_setter(self, name: str | None):
         def setter(icon, item):
-            self.cfg["microphone"] = idx
+            # Store the name, not the index: indices are only valid until the
+            # device list changes (see resolve_microphone).
+            self.cfg["microphone"] = name
             save_config(self.cfg)
-            self.recorder = Recorder(idx)
             self._refresh_menu()
-            log.info(f"Micro -> {idx}")
+            log.info(f"Micro -> {name or 'System default'}")
         return setter
 
     def _on_toggle_auto_paste(self, icon, item):
@@ -747,7 +801,9 @@ class WhisperSTT:
         self._empty_result = False
         self._set_state("recording")
         log.info("Recording...")
-        self.recorder = Recorder(device_index=self.cfg.get("microphone"))
+        # Resolved per take, never cached: the index is only valid right now.
+        idx, name = resolve_microphone(self.cfg.get("microphone"))
+        self.recorder = Recorder(device_index=idx, expected_name=name)
         self.recorder.start()
 
     def _stop_and_transcribe(self):
@@ -866,11 +922,12 @@ class WhisperSTT:
         ttk.Label(mic_frame, text="Micro :").pack(side="left")
 
         mic_names = ["System default"] + [name for _, name in mics]
-        mic_indices = [None] + [idx for idx, _ in mics]
-        current_mic = self.cfg.get("microphone")
+        # Names, not indices: what gets saved must survive a device list change.
+        mic_values = [None] + [name for _, name in mics]
+        _, current_mic = resolve_microphone(self.cfg.get("microphone"))
         current_idx = 0
-        for i, idx in enumerate(mic_indices):
-            if idx == current_mic:
+        for i, name in enumerate(mic_values):
+            if name == current_mic:
                 current_idx = i
                 break
 
@@ -911,7 +968,7 @@ class WhisperSTT:
             # Save settings
             self.cfg["hotkey"] = hotkey_var.get().strip()
             selected_mic = mic_combo.current()
-            self.cfg["microphone"] = mic_indices[selected_mic]
+            self.cfg["microphone"] = mic_values[selected_mic]
             self.cfg["language"] = lang_var.get()
             save_config(self.cfg)
             self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
@@ -927,8 +984,8 @@ class WhisperSTT:
     # ── Run ──
 
     def _get_mic_name(self) -> str:
-        mic_idx = self.cfg.get("microphone")
-        if mic_idx is None:
+        wanted = self.cfg.get("microphone")
+        if wanted is None:
             try:
                 pa = pyaudio.PyAudio()
                 name = pa.get_default_input_device_info()["name"]
@@ -936,10 +993,8 @@ class WhisperSTT:
                 return name
             except Exception:
                 return "default"
-        for idx, name in list_microphones():
-            if idx == mic_idx:
-                return name
-        return f"device {mic_idx}"
+        _, name = resolve_microphone(wanted)
+        return name or f"{wanted} (indisponible)"
 
     def run(self):
         log.info("=" * 45)
