@@ -778,29 +778,14 @@ class WhisperSTT:
 
     def _build_menu(self) -> pystray.Menu:
         lang = self.cfg["language"]
-        _, mic_name = resolve_microphone(self.cfg.get("microphone"))
         prompt = self.cfg.get("prompt", "") or "(vide)"
         if len(prompt) > 40:
             prompt = prompt[:37] + "..."
 
-        mics = list_microphones()
-        mic_items = [
-            pystray.MenuItem(
-                f"{'> ' if mic_name is None else '  '}System default",
-                self._make_mic_setter(None),
-            ),
-        ]
-        for _idx, name in mics:
-            short = name[:50]
-            mic_items.append(
-                pystray.MenuItem(
-                    f"{'> ' if name == mic_name else '  '}{short}",
-                    self._make_mic_setter(name),
-                )
-            )
-        if not mic_items:
-            mic_items.append(pystray.MenuItem("(aucun micro)", None, enabled=False))
-
+        # No microphone picker: the app follows the Windows default and adapts
+        # to it (WASAPI endpoint, native sample rate, virtual mics skipped), so
+        # there is nothing left to choose here. The `microphone:` key in
+        # config.yaml still pins a device by name if that is ever needed.
         return pystray.Menu(
             pystray.MenuItem(f"Langue: {lang}", pystray.Menu(
                 pystray.MenuItem("auto", self._make_lang_setter("auto")),
@@ -808,7 +793,6 @@ class WhisperSTT:
                 pystray.MenuItem("en", self._make_lang_setter("en")),
             )),
             pystray.MenuItem(f"Prompt: {prompt}", self._on_edit_prompt),
-            pystray.MenuItem("Micro", pystray.Menu(*mic_items)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 "Coller automatiquement (Ctrl+V)",
@@ -825,16 +809,6 @@ class WhisperSTT:
             save_config(self.cfg)
             self._refresh_menu()
             log.info(f"Langue -> {lang}")
-        return setter
-
-    def _make_mic_setter(self, name: str | None):
-        def setter(icon, item):
-            # Store the name, not the index: indices are only valid until the
-            # device list changes (see resolve_microphone).
-            self.cfg["microphone"] = name
-            save_config(self.cfg)
-            self._refresh_menu()
-            log.info(f"Micro -> {name or 'System default'}")
         return setter
 
     def _on_toggle_auto_paste(self, icon, item):

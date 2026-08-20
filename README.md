@@ -19,11 +19,11 @@ All three run the same Whisper models with comparable accuracy. The difference i
 ## Features
 
 - **Push-to-talk** — hold a global hotkey (default `Win+Y`), speak, release to transcribe
-- **Auto-paste** — transcription is copied to clipboard and pasted into the active window
-- **System tray** — minimal UI with language selection, microphone picker, and prompt editing
+- **Clipboard-first** — the transcription always lands on the clipboard (and in the Win+V history); optional auto-paste injects Ctrl+V
+- **System tray** — minimal UI with language selection, prompt editing, and an auto-paste toggle
 - **Fully local** — no internet required, everything runs on your machine
 - **Fast** — uses whisper.cpp with Vulkan GPU acceleration
-- **Configurable** — language, hotkey, model, microphone, and transcription prompt via `config.yaml`
+- **Configurable** — language, hotkey, model, and transcription prompt via `config.yaml`. The microphone follows the Windows default automatically
 
 ## Requirements
 
@@ -109,7 +109,7 @@ Requires Python 3.10+ and Git.
    pip install -r requirements.txt
    ```
 
-4. **Edit `config.yaml`** if you want to change the hotkey or language. The microphone follows the Windows default; override it from the tray menu if needed.
+4. **Edit `config.yaml`** if you want to change the hotkey or language. The microphone needs no setup: the app follows the Windows default, resolves it to its WASAPI endpoint, opens it at its native sample rate, and skips virtual mics.
 
 ### Vulkan GPU acceleration (optional)
 
@@ -165,8 +165,8 @@ Double-click `launch.vbs` — the app starts hidden with no console window.
 
 Right-click the tray icon to:
 - Switch language (auto, English, French, etc.)
-- Select a microphone
 - Edit the transcription prompt (useful for jargon or proper nouns)
+- Toggle auto-paste (off by default: the text goes to the clipboard, you paste it)
 - Quit
 
 ### Configuration
@@ -179,7 +179,7 @@ All settings are in `config.yaml`:
 | `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns) |
 | `hotkey` | `win+y` | Push-to-talk hotkey |
 | `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
-| `microphone` | `null` | Input device **name** (e.g. `Microphone (PRO X 2 LIGHTSPEED)`). `null` follows the Windows default. Stored as a name, not an index: PortAudio indices change when devices sleep or reconnect |
+| `microphone` | `null` | Leave as `null`: the app follows the Windows default. Set an input device **name** to pin one (never an index -- PortAudio indices change when devices sleep or reconnect) |
 | `auto_paste` | `false` | Also inject Ctrl+V after copying. Off by default: the text always goes to the clipboard, you choose where to paste it |
 
 ## License
