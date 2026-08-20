@@ -384,17 +384,29 @@ def resample(audio: array.array, src_rate: int, dst_rate: int) -> array.array:
 
 
 def _is_device_available(pa: pyaudio.PyAudio, device_index: int) -> bool:
-    """Check if a device is actually usable by trying to open a stream."""
+    """Check a device is usable, probing at the rate the device itself reports.
+
+    Probing at a hardcoded 44100 silently disqualified every 48 kHz WASAPI
+    endpoint -- which is exactly the endpoint we want. list_microphones() then
+    fell through to the MME entry for the same mic, so routing the default
+    "through WASAPI" kept landing on MME.
+    """
     try:
-        stream = pa.open(
-            format=FORMAT, channels=CHANNELS, rate=RECORD_RATE,
-            input=True, frames_per_buffer=CHUNK,
-            input_device_index=device_index,
-        )
-        stream.close()
-        return True
-    except (ValueError, OSError):
-        return False
+        native = int(pa.get_device_info_by_index(device_index)["defaultSampleRate"])
+    except Exception:
+        native = RECORD_RATE
+    for rate in dict.fromkeys((native, RECORD_RATE, 48000)):
+        try:
+            stream = pa.open(
+                format=FORMAT, channels=CHANNELS, rate=rate,
+                input=True, frames_per_buffer=CHUNK,
+                input_device_index=device_index,
+            )
+            stream.close()
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
 
 
 _VIRTUAL_MIC_KEYWORDS = (
@@ -407,6 +419,22 @@ _VIRTUAL_MIC_KEYWORDS = (
 def _is_virtual_mic(name: str) -> bool:
     lower = name.lower()
     return any(kw in lower for kw in _VIRTUAL_MIC_KEYWORDS)
+
+
+_last_host_api_msg: dict[str, str] = {}
+
+
+def _host_api_of(device_index: int) -> str:
+    """Name of the host API backing a device index, for logging."""
+    try:
+        pa = pyaudio.PyAudio()
+        try:
+            info = pa.get_device_info_by_index(device_index)
+            return pa.get_host_api_info_by_index(info["hostApi"])["name"]
+        finally:
+            pa.terminate()
+    except Exception:
+        return "?"
 
 
 def _find_by_name(wanted: str, mics: list[tuple[int, str]]) -> tuple[int, str] | None:
@@ -459,8 +487,16 @@ def _default_or_best_physical() -> tuple[int | None, str | None]:
     if found is None:
         log.warning(f"Windows default {name!r} has no usable endpoint; letting PortAudio choose")
         return None, None
-    if api != "Windows WASAPI":
-        log.info(f"Windows default {name!r} is exposed via {api}; using its WASAPI endpoint instead")
+    # Report the host API we actually landed on, not the one we hoped for:
+    # claiming "using its WASAPI endpoint" while opening MME hid a real bug.
+    got = _host_api_of(found[0])
+    if got != api:
+        msg = f"Windows default {name!r} is exposed via {api}; using its {got} endpoint instead"
+        # Resolution runs several times per take (tray state, menu, recording);
+        # only report a change, so the log stays readable.
+        if msg != _last_host_api_msg.get("v"):
+            _last_host_api_msg["v"] = msg
+            (log.info if got == "Windows WASAPI" else log.warning)(msg)
     return found
 
 
