@@ -365,6 +365,7 @@ FORMAT = pyaudio.paInt16
 CHUNK = 1024
 SILENCE_PEAK = 0.01   # below this the recording is treated as silence
 PEAK_STRIDE = 16      # subsampling used for the level check
+READER_JOIN_TIMEOUT = 2.0   # how long stop() waits for the capture thread
 
 
 def resample(audio: array.array, src_rate: int, dst_rate: int) -> array.array:
@@ -591,6 +592,7 @@ class Recorder:
         self._stream = None
         self._frames: list[bytes] = []
         self._recording = False
+        self._reader: threading.Thread | None = None
         self._cached_rate: int | None = None
 
     def start(self):
@@ -624,7 +626,10 @@ class Recorder:
             log.warning(f"Could not identify the capture device: {e}")
         self._frames = []
         self._recording = True
-        threading.Thread(target=self._read_loop, daemon=True).start()
+        # Keep the handle: stop() must join this thread before touching the
+        # stream, or it tears down PortAudio while the thread is inside read().
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
 
     def _find_supported_rate(self) -> int:
         """Find a sample rate the device supports, its own native rate first.
@@ -656,9 +661,12 @@ class Recorder:
         return RECORD_RATE
 
     def _read_loop(self):
-        while self._recording and self._stream:
+        # Local handle: stop() clears self._stream, and reading the attribute
+        # each iteration would race with that.
+        stream = self._stream
+        while self._recording and stream:
             try:
-                data = self._stream.read(CHUNK, exception_on_overflow=False)
+                data = stream.read(CHUNK, exception_on_overflow=False)
                 self._frames.append(data)
             except Exception as e:
                 # Losing the device mid-recording (headset sleeping, another app
@@ -668,12 +676,37 @@ class Recorder:
 
     def stop(self) -> array.array | None:
         self._recording = False
+
+        # Join before closing anything. Closing a stream -- or terminating
+        # PortAudio -- while the reader thread sits inside read() either
+        # deadlocks stop() or frees the stream under it and kills the process
+        # with a native access violation. Both were observed: one take hung
+        # forever at "Transcribing...", another vanished without a traceback.
+        # Another app grabbing the endpoint (Windows dictation, Win+H) makes
+        # read() block far longer, which is what made this reliably reproducible.
+        if self._reader is not None:
+            self._reader.join(timeout=READER_JOIN_TIMEOUT)
+            if self._reader.is_alive():
+                log.error(
+                    f"Capture thread still running after {READER_JOIN_TIMEOUT}s; "
+                    "leaking the stream rather than closing it under the thread"
+                )
+                self._stream = None
+                self._pa = None
+            self._reader = None
+
         if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
+            try:
+                self._stream.stop_stream()
+                self._stream.close()
+            except Exception as e:
+                log.error(f"Closing the capture stream: {e}")
             self._stream = None
         if self._pa:
-            self._pa.terminate()
+            try:
+                self._pa.terminate()
+            except Exception as e:
+                log.error(f"Terminating PortAudio: {e}")
             self._pa = None
         if not self._frames:
             log.warning("No audio captured at all")
