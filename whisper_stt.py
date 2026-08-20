@@ -397,13 +397,18 @@ def _is_device_available(pa: pyaudio.PyAudio, device_index: int) -> bool:
         native = RECORD_RATE
     for rate in dict.fromkeys((native, RECORD_RATE, 48000)):
         try:
-            stream = pa.open(
-                format=FORMAT, channels=CHANNELS, rate=rate,
-                input=True, frames_per_buffer=CHUNK,
-                input_device_index=device_index,
-            )
-            stream.close()
-            return True
+            # is_format_supported() queries the driver without ever opening a
+            # stream. Opening one here poisoned the recording that followed:
+            # measured A/B, a capture opened right after this probe returned a
+            # dead signal (peak 1/32768) every time, while a directly opened
+            # one carried audio (peak 12-32) on the same endpoint.
+            if pa.is_format_supported(
+                rate,
+                input_device=device_index,
+                input_channels=CHANNELS,
+                input_format=FORMAT,
+            ):
+                return True
         except (ValueError, OSError):
             continue
     return False
@@ -757,6 +762,7 @@ class WhisperSTT:
         self.engine: WhisperEngine | None = None
         self._running = True
         self._empty_result = False
+        self._mic_name: str | None = None
         self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
         self._migrate_microphone_setting()
 
@@ -874,10 +880,13 @@ class WhisperSTT:
     def _start_recording(self):
         self.recording = True
         self._empty_result = False
+        # Resolve first, once: the index is only valid right now, but resolving
+        # opens every device, so this must happen exactly once per take --
+        # before _set_state(), which reads the cached name it produces.
+        idx, name = resolve_microphone(self.cfg.get("microphone"))
+        self._mic_name = name or "default"
         self._set_state("recording")
         log.info("Recording...")
-        # Resolved per take, never cached: the index is only valid right now.
-        idx, name = resolve_microphone(self.cfg.get("microphone"))
         self.recorder = Recorder(device_index=idx, expected_name=name)
         self.recorder.start()
 
@@ -1040,19 +1049,22 @@ class WhisperSTT:
     # ── Run ──
 
     def _get_mic_name(self) -> str:
-        wanted = self.cfg.get("microphone")
-        if wanted is None:
-            try:
-                pa = pyaudio.PyAudio()
-                name = pa.get_default_input_device_info()["name"]
-                pa.terminate()
-                return name
-            except Exception:
-                return "default"
-        _, name = resolve_microphone(wanted)
-        return name or f"{wanted} (indisponible)"
+        """Cached display name. Never resolves: resolution opens every device.
+
+        This is called from _set_state(), so it used to run list_microphones()
+        -- and therefore _is_device_available(), which opens and closes a stream
+        on every input -- three or four extra times per recording. Hammering the
+        capture endpoint like that degrades it: measured back-to-back, a stream
+        opened after that sequence returns a dead signal (peak 1/32768) while a
+        directly opened one still carries audio.
+        """
+        return self._mic_name or "default"
 
     def run(self):
+        # Populate the cached name once; every later read is free.
+        _, name = resolve_microphone(self.cfg.get("microphone"))
+        self._mic_name = name or "default"
+
         log.info("=" * 45)
         log.info("Whisper STT — Push-to-talk (Vulkan GPU)")
         log.info(f"Hotkey : {self.cfg['hotkey']} (maintenir)")
