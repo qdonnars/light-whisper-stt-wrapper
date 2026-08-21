@@ -637,25 +637,29 @@ class Recorder:
         Hardcoding 44100 first meant opening a 48 kHz WASAPI endpoint at the
         wrong rate and relying on the host API to resample -- which is exactly
         where MME starts returning silence.
+
+        Probing must never open a stream. Doing so on this PyAudio instance,
+        immediately before the real open, leaves the recording stream dead:
+        measured A/B while speaking, a capture opened straight away peaked at
+        5019/32768 while one opened after this probe never passed 13.
         """
-        native = None
+        idx = self.device_index
         try:
-            idx = self.device_index
             if idx is None:
                 idx = self._pa.get_default_input_device_info()["index"]
             native = int(self._pa.get_device_info_by_index(idx)["defaultSampleRate"])
         except Exception:
-            pass
+            native = None
         rates = [r for r in (native, RECORD_RATE, 48000, 16000, 22050, 32000, 8000) if r]
-        rates = list(dict.fromkeys(rates))  # keep order, drop duplicates
-        for rate in rates:
+        for rate in dict.fromkeys(rates):
             try:
-                self._pa.open(
-                    format=FORMAT, channels=CHANNELS, rate=rate,
-                    input=True, frames_per_buffer=CHUNK,
-                    input_device_index=self.device_index,
-                ).close()
-                return rate
+                if self._pa.is_format_supported(
+                    rate,
+                    input_device=idx,
+                    input_channels=CHANNELS,
+                    input_format=FORMAT,
+                ):
+                    return rate
             except (ValueError, OSError):
                 continue
         return RECORD_RATE
