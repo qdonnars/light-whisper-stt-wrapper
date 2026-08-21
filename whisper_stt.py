@@ -720,15 +720,25 @@ class Recorder:
         duration = len(audio) / self.rate
         # Subsampled: scanning every sample costs ~215 ms on a 2 min take, and
         # this only has to answer "is the mic dead?", not measure the signal.
-        peak = max((abs(s) for s in audio[::PEAK_STRIDE]), default=0.0)
+        sample = audio[::PEAK_STRIDE]
+        peak = max((abs(s) for s in sample), default=0.0)
+        # Report raw int16 units and how much of the take is non-zero. "%.4f"
+        # alone printed 0.0000 for a dead stream and for a live mic in a quiet
+        # room alike, and that ambiguity sent this debugging down three wrong
+        # paths. 0 non-zero means nothing arrived; a floor of a few units with
+        # ~50% non-zero means the mic is alive but the signal is being crushed.
+        units = round(peak * 32768)
+        live = 100.0 * sum(1 for s in sample if s) / len(sample) if sample else 0.0
+        level = f"peak {units}/32768 ({peak:.4f}), {live:.0f}% non-zero"
         if peak < SILENCE_PEAK:
             log.warning(
-                f"Recorded {duration:.1f}s but the signal is silent "
-                f"(peak {peak:.4f}) — muted mic, or a noise gate closing on you "
-                f"(G HUB Blue VO!CE, NVIDIA Broadcast, Discord noise suppression)?"
+                f"Recorded {duration:.1f}s but the signal is silent — {level}. "
+                f"{'Nothing arrived at all' if live < 1 else 'Mic alive but crushed'}: "
+                "muted mic, or a noise gate (G HUB Blue VO!CE, NVIDIA Broadcast, "
+                "Discord noise suppression)?"
             )
         else:
-            log.info(f"Recorded {duration:.1f}s, peak {peak:.3f}")
+            log.info(f"Recorded {duration:.1f}s, {level}")
         return resample(audio, self.rate, WHISPER_RATE)
 
 
