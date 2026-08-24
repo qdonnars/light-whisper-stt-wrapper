@@ -264,18 +264,211 @@ def send_ctrl_v():
 
 # ─── Whisper DLL bindings ────────────────────────────────────────────────────
 
-_OFFSET_INITIAL_PROMPT = 80
-_OFFSET_LANGUAGE = 104
+# The whisper.cpp parameter struct is declared field by field, not poked at
+# hardcoded byte offsets. The previous version wrote two pointers at offsets 80
+# and 104. 104 really was `language`, but 80 is `carry_initial_prompt`: every
+# prompt set from the tray menu landed in a bool and its padding, while the
+# actual `initial_prompt` field stayed null. The prompt feature never did
+# anything, and nothing could report it, since writing a pointer into padding
+# is perfectly legal.
+#
+# The layout below mirrors whisper.cpp v1.8.3 (include/whisper.h) and is
+# x86_64 only: every pointer is 8 bytes and the padding assumes it.
+# _verify_params_layout() checks it against the DLL that actually loaded, so a
+# DLL whose struct moved fails at startup instead of writing to a wrong field.
+
+EXPECTED_WHISPER_CPP_TAG = "v1.8.3"
+
+
+class WhisperGreedyParams(ctypes.Structure):
+    _fields_ = [("best_of", ctypes.c_int)]
+
+
+class WhisperBeamSearchParams(ctypes.Structure):
+    _fields_ = [
+        ("beam_size", ctypes.c_int),
+        ("patience", ctypes.c_float),
+    ]
+
+
+class WhisperVadParams(ctypes.Structure):
+    _fields_ = [
+        ("threshold", ctypes.c_float),
+        ("min_speech_duration_ms", ctypes.c_int),
+        ("min_silence_duration_ms", ctypes.c_int),
+        ("max_speech_duration_s", ctypes.c_float),
+        ("speech_pad_ms", ctypes.c_int),
+        ("samples_overlap", ctypes.c_float),
+    ]
+
+
+class WhisperFullParams(ctypes.Structure):
+    """Mirror of struct whisper_full_params.
+
+    Callback and grammar members stay opaque pointers on purpose: the app never
+    installs a callback, and spelling them out as CFUNCTYPE would add noise
+    without changing the layout. They are 8 bytes either way, which is all the
+    field offsets depend on.
+    """
+
+    _fields_ = [
+        ("strategy", ctypes.c_int),
+        ("n_threads", ctypes.c_int),
+        ("n_max_text_ctx", ctypes.c_int),
+        ("offset_ms", ctypes.c_int),
+        ("duration_ms", ctypes.c_int),
+        ("translate", ctypes.c_bool),
+        ("no_context", ctypes.c_bool),
+        ("no_timestamps", ctypes.c_bool),
+        ("single_segment", ctypes.c_bool),
+        ("print_special", ctypes.c_bool),
+        ("print_progress", ctypes.c_bool),
+        ("print_realtime", ctypes.c_bool),
+        ("print_timestamps", ctypes.c_bool),
+        ("token_timestamps", ctypes.c_bool),
+        ("thold_pt", ctypes.c_float),
+        ("thold_ptsum", ctypes.c_float),
+        ("max_len", ctypes.c_int),
+        ("split_on_word", ctypes.c_bool),
+        ("max_tokens", ctypes.c_int),
+        ("debug_mode", ctypes.c_bool),
+        ("audio_ctx", ctypes.c_int),
+        ("tdrz_enable", ctypes.c_bool),
+        ("suppress_regex", ctypes.c_char_p),
+        ("initial_prompt", ctypes.c_char_p),
+        ("carry_initial_prompt", ctypes.c_bool),
+        ("prompt_tokens", ctypes.c_void_p),
+        ("prompt_n_tokens", ctypes.c_int),
+        ("language", ctypes.c_char_p),
+        ("detect_language", ctypes.c_bool),
+        ("suppress_blank", ctypes.c_bool),
+        ("suppress_nst", ctypes.c_bool),
+        ("temperature", ctypes.c_float),
+        ("max_initial_ts", ctypes.c_float),
+        ("length_penalty", ctypes.c_float),
+        ("temperature_inc", ctypes.c_float),
+        ("entropy_thold", ctypes.c_float),
+        ("logprob_thold", ctypes.c_float),
+        ("no_speech_thold", ctypes.c_float),
+        ("greedy", WhisperGreedyParams),
+        ("beam_search", WhisperBeamSearchParams),
+        ("new_segment_callback", ctypes.c_void_p),
+        ("new_segment_callback_user_data", ctypes.c_void_p),
+        ("progress_callback", ctypes.c_void_p),
+        ("progress_callback_user_data", ctypes.c_void_p),
+        ("encoder_begin_callback", ctypes.c_void_p),
+        ("encoder_begin_callback_user_data", ctypes.c_void_p),
+        ("abort_callback", ctypes.c_void_p),
+        ("abort_callback_user_data", ctypes.c_void_p),
+        ("logits_filter_callback", ctypes.c_void_p),
+        ("logits_filter_callback_user_data", ctypes.c_void_p),
+        ("grammar_rules", ctypes.c_void_p),
+        ("n_grammar_rules", ctypes.c_size_t),
+        ("i_start_rule", ctypes.c_size_t),
+        ("grammar_penalty", ctypes.c_float),
+        ("vad", ctypes.c_bool),
+        ("vad_model_path", ctypes.c_char_p),
+        ("vad_params", WhisperVadParams),
+    ]
+
+
+# Defaults whisper_full_default_params() is known to set, read back from the
+# DLL at startup to prove the struct above still lines up with it. They run
+# from the head of the struct to its last member, so a field inserted anywhere
+# shifts at least one of them.
+#
+# Numeric first, pointers second, and the order matters: reading an int or a
+# float at a wrong offset returns nonsense but is harmless, while reading a
+# char* at a wrong offset dereferences whatever integer happens to sit there
+# and takes the process down with a segfault. Checking the numbers first turns
+# that crash into an error message.
+_PARAMS_FINGERPRINT_NUMERIC = (
+    ("n_max_text_ctx", 16384),
+    ("thold_pt", 0.01),
+    ("thold_ptsum", 0.01),
+    ("carry_initial_prompt", False),
+    ("detect_language", False),
+    ("suppress_blank", True),
+    ("temperature", 0.0),
+    ("max_initial_ts", 1.0),
+    ("length_penalty", -1.0),
+    ("temperature_inc", 0.2),
+    ("entropy_thold", 2.4),
+    ("logprob_thold", -1.0),
+    ("no_speech_thold", 0.6),
+    ("vad", False),
+)
+
+_PARAMS_FINGERPRINT_POINTER = (
+    ("language", b"en"),
+    ("initial_prompt", None),
+    ("suppress_regex", None),
+)
+
+
+class LayoutMismatchError(RuntimeError):
+    """The DLL's parameter struct is not the layout this module was written for."""
+
+
+# ─── Hallucination filter ────────────────────────────────────────────────────
+
+# Whisper fills silence with stock phrases learned from subtitle corpora.
+_HALLUCINATION_EXACT = frozenset({
+    "[blank_audio]",
+    "(blank_audio)",
+    "thank you",
+    "thanks for watching",
+})
+
+# The subtitle credits run on past the marker ("Sous-titres par la communaute
+# d'Amara.org"), so these match a transcription that merely starts with them.
+_HALLUCINATION_PREFIXES = (
+    "sous-titres par",
+    "sous-titres réalisés par",
+)
+
+
+def _normalize_for_match(text: str) -> str:
+    """Collapse whitespace, drop edge punctuation, lowercase."""
+    return re.sub(r"\s+", " ", text).strip().strip(" .!?…").lower()
+
+
+def is_hallucination(text: str) -> bool:
+    """True when the *whole* transcription is one of whisper's silence fillers.
+
+    Matching the whole string is the point. The previous version ran
+    str.replace() for each marker over the text, so dictating "Thank you. I'll
+    send the file tomorrow" silently lost its first two words, and the log only
+    ever showed the text after the damage.
+    """
+    normalized = _normalize_for_match(text)
+    if not normalized:
+        return True
+    return (
+        normalized in _HALLUCINATION_EXACT
+        or normalized.startswith(_HALLUCINATION_PREFIXES)
+    )
 
 
 class WhisperEngine:
     """Thin ctypes wrapper around whisper.dll (Vulkan-compiled)."""
 
     def __init__(self, model_path: str):
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            raise LayoutMismatchError(
+                "Whisper STT needs 64-bit Python: the whisper.cpp parameter "
+                "layout this module mirrors is x86_64 only."
+            )
         os.add_dll_directory(DLL_DIR)
         self._lib = ctypes.CDLL(os.path.join(DLL_DIR, "whisper.dll"))
         self._setup_functions()
-        self._pinned: list = []
+        self._verify_params_layout()
+        # Keeps the encoded language and prompt alive for the whole call: the
+        # struct only holds pointers into these bytes, and the DLL reads them
+        # long after transcribe() has assigned them. Guarded by _lock, so a
+        # second caller cannot clear the list under a running decode.
+        self._pinned: list[bytes] = []
+        self._lock = threading.Lock()
 
         cparams = self._lib.whisper_context_default_params_by_ref()
         model_bytes = str(BASE_DIR / model_path).encode("utf-8")
@@ -307,55 +500,111 @@ class WhisperEngine:
         lib.whisper_free_context_params.restype = None
         lib.whisper_free_context_params.argtypes = [ctypes.c_void_p]
 
-    def _set_ptr_field(self, params_ptr: int, offset: int, value: bytes | None):
-        if value is not None:
-            c_str = ctypes.c_char_p(value)
-            self._pinned.append(c_str)
-            ctypes.memmove(params_ptr + offset, ctypes.byref(c_str), 8)
-        else:
-            null = ctypes.c_void_p(0)
-            ctypes.memmove(params_ptr + offset, ctypes.byref(null), 8)
+    def _verify_params_layout(self):
+        """Fail at startup if the DLL's struct is not the one we mirror.
+
+        Swapping in a whisper.dll from another release is the failure this
+        guards. Without it, a moved field means writing a pointer into
+        whatever now sits at that offset: no exception, no log line, just a
+        setting that quietly stops working or memory that quietly rots.
+        """
+        ptr = self._lib.whisper_full_default_params_by_ref(0)
+        if not ptr:
+            raise LayoutMismatchError("whisper_full_default_params_by_ref returned null")
+        try:
+            params = WhisperFullParams.from_address(ptr)
+            mismatches = self._compare(params, _PARAMS_FINGERPRINT_NUMERIC)
+            # Only safe once the numbers agree. See _PARAMS_FINGERPRINT_NUMERIC.
+            if not mismatches:
+                mismatches = self._compare(params, _PARAMS_FINGERPRINT_POINTER)
+        finally:
+            self._lib.whisper_free_params(ptr)
+
+        if mismatches:
+            raise LayoutMismatchError(
+                "whisper.dll does not match the parameter layout of "
+                f"whisper.cpp {EXPECTED_WHISPER_CPP_TAG}, so language and prompt "
+                "would be written to the wrong fields. Rebuild against "
+                f"{EXPECTED_WHISPER_CPP_TAG} or update WhisperFullParams. "
+                "Mismatched: " + "; ".join(mismatches)
+            )
+        log.info(f"whisper.dll parameter layout matches {EXPECTED_WHISPER_CPP_TAG}")
+
+    @staticmethod
+    def _compare(params, fingerprint) -> list[str]:
+        mismatches = []
+        for field, expected in fingerprint:
+            actual = getattr(params, field)
+            if isinstance(expected, float):
+                ok = isinstance(actual, float) and abs(actual - expected) < 1e-6
+            else:
+                ok = actual == expected and type(actual) is type(expected)
+            if not ok:
+                mismatches.append(f"{field}: expected {expected!r}, got {actual!r}")
+        return mismatches
 
     def transcribe(self, audio: array.array, language: str = "auto",
                    prompt: str = "") -> str:
+        # Serialised: the DLL reads through pointers into self._pinned for the
+        # whole of whisper_full(), so a concurrent call clearing that list
+        # would free a buffer mid-decode. The tray also guards against
+        # re-entry, but the invariant belongs here, next to the memory it
+        # protects.
+        with self._lock:
+            return self._transcribe(audio, language, prompt)
+
+    def _transcribe(self, audio: array.array, language: str, prompt: str) -> str:
         self._pinned.clear()
-        params = self._lib.whisper_full_default_params_by_ref(0)
-
-        if language and language != "auto":
-            self._set_ptr_field(params, _OFFSET_LANGUAGE, language.encode("utf-8"))
-        else:
-            self._set_ptr_field(params, _OFFSET_LANGUAGE, None)
-
-        if prompt:
-            self._set_ptr_field(params, _OFFSET_INITIAL_PROMPT, prompt.encode("utf-8"))
-
-        # Convert array.array('f') to ctypes float pointer
-        c_audio = (ctypes.c_float * len(audio)).from_buffer(audio)
-        ret = self._lib.whisper_full(
-            self._ctx, params,
-            ctypes.cast(c_audio, ctypes.POINTER(ctypes.c_float)),
-            len(audio),
-        )
-        if ret != 0:
-            self._lib.whisper_free_params(params)
-            log.error(f"whisper_full error: {ret}")
+        params_ptr = self._lib.whisper_full_default_params_by_ref(0)
+        if not params_ptr:
+            log.error("whisper_full_default_params_by_ref returned null")
             return ""
+        try:
+            params = WhisperFullParams.from_address(params_ptr)
 
-        segments = []
-        n = self._lib.whisper_full_n_segments(self._ctx)
-        for i in range(n):
-            text_bytes = self._lib.whisper_full_get_segment_text(self._ctx, i)
-            if text_bytes:
-                segments.append(text_bytes.decode("utf-8", errors="replace"))
+            if language and language != "auto":
+                params.language = self._pin(language.encode("utf-8"))
+            else:
+                # Null means auto-detect.
+                params.language = None
 
-        self._lib.whisper_free_params(params)
-        self._pinned.clear()
+            if prompt:
+                params.initial_prompt = self._pin(prompt.encode("utf-8"))
+
+            # Convert array.array('f') to ctypes float pointer
+            c_audio = (ctypes.c_float * len(audio)).from_buffer(audio)
+            ret = self._lib.whisper_full(
+                self._ctx, params_ptr,
+                ctypes.cast(c_audio, ctypes.POINTER(ctypes.c_float)),
+                len(audio),
+            )
+            if ret != 0:
+                log.error(f"whisper_full error: {ret}")
+                return ""
+
+            segments = []
+            n = self._lib.whisper_full_n_segments(self._ctx)
+            for i in range(n):
+                text_bytes = self._lib.whisper_full_get_segment_text(self._ctx, i)
+                if text_bytes:
+                    segments.append(text_bytes.decode("utf-8", errors="replace"))
+        finally:
+            # Runs on every path, including a decode that raised: the struct is
+            # heap allocated by the DLL and leaks otherwise.
+            self._lib.whisper_free_params(params_ptr)
+            self._pinned.clear()
 
         text = " ".join(s.strip() for s in segments).strip()
-        for noise in ["[BLANK_AUDIO]", "(BLANK_AUDIO)", "Thank you.",
-                       "Thanks for watching!", "Sous-titres par"]:
-            text = text.replace(noise, "").strip()
+        if is_hallucination(text):
+            if text:
+                log.info(f"Discarded as a silence hallucination: {text!r}")
+            return ""
         return text
+
+    def _pin(self, value: bytes) -> bytes:
+        """Hold *value* until the call ends, and hand it to ctypes."""
+        self._pinned.append(value)
+        return value
 
     def close(self):
         if self._ctx:
