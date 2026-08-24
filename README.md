@@ -89,7 +89,7 @@ No Python needed. Download, extract, run.
 
 > **Checking what you downloaded:** every release note lists the SHA256 of its zip. Since the executable is not signed, this is the way to confirm you got the file that was published. Compare it before extracting:
 > ```
-> certutil -hashfile whisper-stt-1.3.0.zip SHA256
+> certutil -hashfile whisper-stt-v1.3.0-win-x64.zip SHA256
 > ```
 
 ## Installation (from source)
