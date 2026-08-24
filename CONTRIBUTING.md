@@ -30,23 +30,53 @@ You need Windows 10 or later, Python 3.10+, and Git.
 git clone https://github.com/qdonnars/light-whisper-stt-wrapper.git
 cd light-whisper-stt-wrapper
 git checkout dev
-python setup.py
+python bootstrap.py
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 copy config.example.yaml config.yaml
 python whisper_stt.py
 ```
 
-`setup.py` downloads the whisper.cpp binaries and the model, roughly 1.5 GB, so
-give it a moment on the first run.
+`bootstrap.py` downloads the whisper.cpp binaries and the model, roughly 1.5 GB,
+so give it a moment on the first run. It checks both against a known SHA256 and
+refuses anything that does not match. It also leaves an existing
+`whisper-cpp/whisper.dll` in place, so a hand-built Vulkan whisper.cpp survives
+a re-run.
+
+`requirements-dev.txt` pulls in `requirements.txt` plus pytest, ruff, and
+PyInstaller. Running the app needs only `requirements.txt`.
 
 ## Testing a change
 
-There is no automated test suite. Audio capture, global hotkeys, and the system
-tray all need a real Windows desktop with a real microphone, which is not
-something CI can stand in for. So changes are verified by hand.
+There are two halves to this, and you need both.
 
+**The automated half.** Everything that is pure logic has tests:
+
+```
+ruff check .
+pytest
+```
+
+CI runs exactly those two commands on `windows-latest` for every push and pull
+request against `dev` and `main`. Windows only, and not for show: the module
+builds Win32 structures and touches `user32` at import time, so it cannot be
+imported anywhere else.
+
+Tests that need a real desktop, a microphone, or `whisper.dll` are marked
+`@pytest.mark.hardware` and skipped by default. Run them on your own machine
+with:
+
+```
+pytest -m hardware
+```
+
+That is where the check lives that `whisper.dll` still matches the
+`whisper_full_params` layout `whisper_stt.py` mirrors. Run it after swapping in
+a whisper.cpp build.
+
+**The manual half.** Audio capture, global hotkeys, and the tray still need a
+real Windows desktop with a real microphone, and CI cannot stand in for that.
 Before opening a pull request, run the app from source and check:
 
 1. The tray icon appears and the menu opens.
@@ -84,6 +114,24 @@ reintroduce.
   0 without injecting anything. The union has to be declared in full.
 - **Key names are localised on Windows.** That is why hotkeys go through
   `RegisterHotKey` with scan codes rather than a keyboard-hook library.
+
+## Things worth knowing before you touch the whisper.cpp binding
+
+- **Never write into `whisper_full_params` by byte offset.** It was done that
+  way once, with two constants, and one of them was wrong: the prompt pointer
+  went to offset 80, which is `carry_initial_prompt`, so the tray menu's prompt
+  landed in a bool and its padding while `initial_prompt` stayed null. The
+  feature did nothing and nothing could report it, because writing a pointer
+  into padding is perfectly legal. `WhisperFullParams` now mirrors the struct
+  field by field; set fields by name.
+- **The mirror is version specific.** It matches `EXPECTED_WHISPER_CPP_TAG` and
+  is x86_64 only. Swapping in a whisper.dll from another release can move every
+  field after the change. `_verify_params_layout()` reads known defaults back
+  from the DLL at startup so that fails loudly rather than silently.
+- **Check numbers before pointers.** That verification reads the numeric fields
+  first on purpose. Reading an int at a wrong offset returns nonsense and moves
+  on; reading a `char *` at a wrong offset dereferences whatever integer sits
+  there and takes the process down without a traceback.
 
 ## Style
 

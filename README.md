@@ -1,5 +1,7 @@
 # Whisper STT
 
+[![CI](https://github.com/qdonnars/light-whisper-stt-wrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/qdonnars/light-whisper-stt-wrapper/actions/workflows/ci.yml)
+
 Lightweight push-to-talk speech-to-text for Windows. No cloud, no bloat: hold a hotkey, talk, release. Everything runs on your machine via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with optional Vulkan GPU acceleration.
 
 Most speech-to-text tools are heavy, cloud-dependent, or bundled with features you don't need. Whisper STT is a single Python script that sits in your system tray and does one thing well: transcribe your voice when you press a key.
@@ -85,6 +87,11 @@ No Python needed. Download, extract, run.
 
 > **Windows SmartScreen:** on first launch, Windows may show a "Windows protected your PC" warning. Click **More info**, then **Run anyway**. The executable is not code-signed, which is what triggers the prompt.
 
+> **Checking what you downloaded:** every release note lists the SHA256 of its zip. Since the executable is not signed, this is the way to confirm you got the file that was published. Compare it before extracting:
+> ```
+> certutil -hashfile whisper-stt-1.2.0.zip SHA256
+> ```
+
 ## Installation (from source)
 
 Requires Python 3.10+ and Git.
@@ -95,9 +102,9 @@ Requires Python 3.10+ and Git.
    cd light-whisper-stt-wrapper
    ```
 
-2. **Run the setup script.** It downloads the whisper.cpp pre-built binaries (~50 MB) and the `ggml-large-v3-turbo` model (~1.5 GB):
+2. **Run the bootstrap script.** It downloads the whisper.cpp pre-built binaries and the `ggml-large-v3-turbo` model (~1.5 GB), and checks both against a known SHA256 before using them:
    ```
-   python setup.py
+   python bootstrap.py
    ```
 
 3. **Create a virtual environment and install dependencies:**
@@ -125,10 +132,10 @@ The setup script downloads CPU-based binaries. For Vulkan GPU acceleration:
 
 ### Building the .exe yourself
 
-1. Activate the virtual environment. PyInstaller is already listed in `requirements.txt`:
+1. Activate the virtual environment and install the development extras, which is where PyInstaller lives:
    ```
    .venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
    ```
 
 2. Run the build script, which invokes PyInstaller and lays out the distribution folder:
@@ -186,7 +193,7 @@ The app writes everything it does to `whisper_stt.log`, next to the executable o
 
 - **Silent recordings:** check that the Windows default input is a real microphone and not a virtual device (Steam Streaming, OBS, VB-Cable). The app already skips known virtual mics, but an aggressive noise gate on the headset can also produce silence.
 - **The hotkey does nothing:** another application may already own `Win+Y`. Change `hotkey` in `config.yaml`. Note that `Win+H` is reserved by Windows dictation.
-- **No GPU acceleration:** the binaries downloaded by `setup.py` are CPU-only. Follow the Vulkan section above to get GPU support.
+- **No GPU acceleration:** the binaries downloaded by `bootstrap.py` are CPU-only. Follow the Vulkan section above to get GPU support.
 
 ## Author
 
