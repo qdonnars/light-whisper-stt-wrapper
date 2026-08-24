@@ -1,8 +1,15 @@
 """
-Whisper STT — Push-to-talk transcription via whisper.cpp DLL (Vulkan GPU).
+Whisper STT: push-to-talk transcription via whisper.cpp DLL (Vulkan GPU).
 System tray app with configurable hotkey, language, prompt, and microphone.
 Uses Windows RegisterHotKey API for reliable global hotkeys.
+
+Author:  Quentin Donnars <https://github.com/qdonnars>
+License: MIT
 """
+
+__version__ = "1.2.0"
+__author__ = "Quentin Donnars"
+__license__ = "MIT"
 
 import ctypes
 import ctypes.wintypes as w
@@ -180,7 +187,7 @@ class INPUT(ctypes.Structure):
     """Must mirror the full Win32 INPUT union (40 bytes on x64).
 
     Declaring only KEYBDINPUT makes the struct 32 bytes; SendInput validates
-    cbSize against its own sizeof(INPUT) and silently returns 0 — no key is
+    cbSize against its own sizeof(INPUT) and silently returns 0, so no key is
     ever injected. That is not a cosmetic detail, it breaks auto-paste.
     """
     class _INPUT(ctypes.Union):
@@ -217,7 +224,7 @@ def _send(inputs: list) -> bool:
     if sent != len(inputs):
         log.error(
             f"SendInput injected {sent}/{len(inputs)} events "
-            f"(GetLastError={ctypes.get_last_error()}) — keystrokes may be blocked"
+            f"(GetLastError={ctypes.get_last_error()}); keystrokes may be blocked"
         )
         return False
     return True
@@ -486,7 +493,7 @@ def _default_or_best_physical() -> tuple[int | None, str | None]:
         if best is None:
             log.error(f"Windows default is a virtual mic {name!r} and no physical mic was found")
             return None, None
-        log.warning(f"Windows default is a virtual mic {name!r} — using {best[1]!r} instead")
+        log.warning(f"Windows default is a virtual mic {name!r}; using {best[1]!r} instead")
         return best
 
     found = _find_by_name(name, mics)
@@ -530,7 +537,7 @@ def resolve_microphone(wanted) -> tuple[int | None, str | None]:
     if found is not None:
         return found
     log.warning(
-        f"Microphone {wanted!r} is not available (asleep? disconnected?) — "
+        f"Microphone {wanted!r} is not available (asleep? disconnected?), "
         f"falling back to the Windows default. Seen: {[n for _, n in mics]}"
     )
     return None, None
@@ -620,7 +627,7 @@ class Recorder:
             if self.expected_name and opened != self.expected_name:
                 log.warning(
                     f"Expected {self.expected_name!r} but the index now points to "
-                    f"{opened!r} — the device list shifted under us"
+                    f"{opened!r}; the device list shifted under us"
                 )
         except Exception as e:
             log.warning(f"Could not identify the capture device: {e}")
@@ -736,7 +743,7 @@ class Recorder:
         level = f"peak {units}/32768 ({peak:.4f}), {live:.0f}% non-zero"
         if peak < SILENCE_PEAK:
             log.warning(
-                f"Recorded {duration:.1f}s but the signal is silent — {level}. "
+                f"Recorded {duration:.1f}s but the signal is silent: {level}. "
                 f"{'Nothing arrived at all' if live < 1 else 'Mic alive but crushed'}: "
                 "muted mic, or a noise gate (G HUB Blue VO!CE, NVIDIA Broadcast, "
                 "Discord noise suppression)?"
@@ -771,7 +778,7 @@ def deliver_text(text: str, auto_paste: bool):
     if not text:
         return
     if not _copy_to_clipboard(text):
-        log.error("Could not write to the clipboard — transcription LOST (see above)")
+        log.error("Could not write to the clipboard; transcription LOST (see above)")
         return
     log.info("Copied to clipboard")
     if auto_paste:
@@ -881,7 +888,7 @@ class WhisperSTT:
             root.withdraw()
             root.attributes("-topmost", True)
             result = simpledialog.askstring(
-                "Whisper STT — Prompt",
+                "Whisper STT - Prompt",
                 "Mots-cles / jargon pour guider la transcription :",
                 initialvalue=self.cfg.get("prompt", ""),
                 parent=root,
@@ -968,7 +975,7 @@ class WhisperSTT:
             else:
                 # Silently doing nothing here leaves the previous transcription
                 # on the clipboard, which reads as "the app stopped working".
-                log.warning("Empty transcription — clipboard left untouched")
+                log.warning("Empty transcription; clipboard left untouched")
                 self._empty_result = True
         except Exception as e:
             log.error(f"Transcription: {e}")
@@ -1113,7 +1120,7 @@ class WhisperSTT:
         self._mic_name = name or "default"
 
         log.info("=" * 45)
-        log.info("Whisper STT — Push-to-talk (Vulkan GPU)")
+        log.info(f"Whisper STT v{__version__} - Push-to-talk (Vulkan GPU)")
         log.info(f"Hotkey : {self.cfg['hotkey']} (maintenir)")
         log.info(f"Langue : {self.cfg['language']}")
         log.info(f"Micro  : {self._get_mic_name()}")

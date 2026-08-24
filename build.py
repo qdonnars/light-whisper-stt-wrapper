@@ -5,11 +5,14 @@ Usage:
     python build.py
 
 Output:
-    dist/whisper_stt/              — ready-to-distribute folder
+    dist/whisper_stt/              ready-to-distribute folder
       whisper_stt.exe
-      whisper-cpp/                 — DLLs + model (user adds model)
+      whisper-cpp/                 DLLs + model (user adds model)
       config.example.yaml
-      _internal/                   — Python runtime (auto-generated)
+      _internal/                   Python runtime (auto-generated)
+
+Author:  Quentin Donnars <https://github.com/qdonnars>
+License: MIT
 """
 
 import shutil
@@ -31,7 +34,7 @@ def main():
         str(BASE / "whisper_stt.spec"),
     ])
 
-    # 2. Copy whisper-cpp DLLs (not model — too large) next to exe
+    # 2. Copy whisper-cpp DLLs (not the model, too large) next to exe
     dst_wc = DIST / "whisper-cpp"
     dst_wc.mkdir(exist_ok=True)
     for dll in WHISPER_CPP_SRC.glob("*.dll"):
@@ -41,7 +44,7 @@ def main():
     # 3. Copy config example
     shutil.copy2(BASE / "config.example.yaml", DIST / "config.example.yaml")
 
-    # 4. Copy model if present (optional — large file)
+    # 4. Copy model if present (optional, large file)
     for model in WHISPER_CPP_SRC.glob("*.bin"):
         dest = dst_wc / model.name
         if not dest.exists():

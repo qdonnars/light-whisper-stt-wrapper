@@ -1,8 +1,11 @@
 """
-Whisper STT — First-time setup script.
+Whisper STT: first-time setup script.
 
 Downloads the whisper.cpp binaries and the speech-to-text model so the
 application is ready to run.  Re-run at any time to update or repair.
+
+Author:  Quentin Donnars <https://github.com/qdonnars>
+License: MIT
 """
 
 import io
@@ -20,7 +23,7 @@ CONFIG_EXAMPLE = BASE_DIR / "config.example.yaml"
 # ─── Configurable URLs ───────────────────────────────────────────────────────
 
 # whisper.cpp pre-built Windows binaries (CPU + OpenBLAS).
-# For Vulkan GPU acceleration you need to compile whisper.cpp yourself — see
+# For Vulkan GPU acceleration you need to compile whisper.cpp yourself. See
 # the README for instructions.
 WHISPER_CPP_TAG = "v1.8.3"
 WHISPER_CPP_ZIP = (
@@ -60,7 +63,7 @@ def _download(url: str, dest: Path, label: str) -> None:
 def download_binaries() -> None:
     """Download and extract whisper.cpp Windows binaries."""
     if WHISPER_DIR.exists() and (WHISPER_DIR / "whisper.dll").exists():
-        print("[OK] whisper-cpp binaries already present — skipping.")
+        print("[OK] whisper-cpp binaries already present, skipping.")
         return
 
     WHISPER_DIR.mkdir(exist_ok=True)
@@ -87,7 +90,7 @@ def download_model() -> None:
     """Download the GGML model file."""
     model_path = WHISPER_DIR / MODEL_FILE
     if model_path.exists():
-        print(f"[OK] Model {MODEL_FILE} already present — skipping.")
+        print(f"[OK] Model {MODEL_FILE} already present, skipping.")
         return
 
     WHISPER_DIR.mkdir(exist_ok=True)
@@ -99,18 +102,18 @@ def download_model() -> None:
 def create_config() -> None:
     """Copy config.example.yaml → config.yaml if it doesn't exist yet."""
     if CONFIG_PATH.exists():
-        print("[OK] config.yaml already exists — skipping.")
+        print("[OK] config.yaml already exists, skipping.")
         return
     if CONFIG_EXAMPLE.exists():
         shutil.copy2(CONFIG_EXAMPLE, CONFIG_PATH)
         print("[OK] Created config.yaml from config.example.yaml")
     else:
-        print("[WARN] config.example.yaml not found — skipping config creation.")
+        print("[WARN] config.example.yaml not found, skipping config creation.")
 
 
 def main() -> None:
     print("=" * 60)
-    print("  Whisper STT — Setup")
+    print("  Whisper STT Setup")
     print("=" * 60)
     print()
 

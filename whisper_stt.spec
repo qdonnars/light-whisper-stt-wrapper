@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for Whisper STT.
 
-whisper-cpp DLLs and model are NOT bundled — they live in a whisper-cpp/
+whisper-cpp DLLs and model are NOT bundled; they live in a whisper-cpp/
 folder next to the exe (too large + user may swap model).
 """
 
