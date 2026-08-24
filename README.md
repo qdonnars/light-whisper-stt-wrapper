@@ -89,7 +89,7 @@ No Python needed. Download, extract, run.
 
 > **Checking what you downloaded:** every release note lists the SHA256 of its zip. Since the executable is not signed, this is the way to confirm you got the file that was published. Compare it before extracting:
 > ```
-> certutil -hashfile whisper-stt-1.2.0.zip SHA256
+> certutil -hashfile whisper-stt-1.3.0.zip SHA256
 > ```
 
 ## Installation (from source)
@@ -118,7 +118,7 @@ Requires Python 3.10+ and Git.
 
 ### Vulkan GPU acceleration (optional)
 
-The setup script downloads CPU-based binaries. For Vulkan GPU acceleration:
+The bootstrap script downloads CPU-based binaries. For Vulkan GPU acceleration:
 
 1. Install the [Vulkan SDK](https://vulkan.lunarg.com/).
 2. Build whisper.cpp with Vulkan support:

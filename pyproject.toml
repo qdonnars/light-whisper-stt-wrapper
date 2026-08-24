@@ -4,7 +4,7 @@
 
 [project]
 name = "light-whisper-stt-wrapper"
-version = "1.2.0"
+version = "1.3.0"
 description = "Lightweight push-to-talk speech-to-text for Windows, calling whisper.cpp directly through ctypes"
 readme = "README.md"
 requires-python = ">=3.10"
