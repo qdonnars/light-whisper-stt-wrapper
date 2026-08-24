@@ -1,0 +1,55 @@
+# Whisper STT is run as a script, not installed from PyPI, so there is no
+# [build-system] here on purpose. This file exists to hold the metadata and the
+# tool configuration in one place.
+
+[project]
+name = "light-whisper-stt-wrapper"
+version = "1.2.0"
+description = "Lightweight push-to-talk speech-to-text for Windows, calling whisper.cpp directly through ctypes"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Quentin Donnars" }]
+keywords = ["whisper", "speech-to-text", "windows", "push-to-talk", "whisper.cpp"]
+dependencies = [
+    "pyaudio==0.2.14",
+    "pyperclip>=1.9.0",
+    "pyyaml>=6.0",
+    "pystray>=0.19.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+# Not needed to run the app. Kept out of requirements.txt so that following the
+# README does not install a build tool on every user's machine.
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "pyinstaller>=6.19.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/qdonnars/light-whisper-stt-wrapper"
+Changelog = "https://github.com/qdonnars/light-whisper-stt-wrapper/blob/main/CHANGELOG.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# G (logging-format) is deliberately left out: the app logs with f-strings
+# throughout, and turning that into a hard error would bury a real change under
+# a few hundred mechanical ones.
+select = ["E", "F", "I", "B", "UP", "N", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Win32 constants keep their SDK spelling (VK_CONTROL, ERROR_ALREADY_EXISTS)
+# even as locals, so they can be grepped straight against the Microsoft docs.
+"whisper_stt.py" = ["N806"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Anything needing a microphone, a tray, or whisper.dll is opt in: CI has none
+# of them. Run those with `pytest -m hardware` on a real desktop.
+markers = ["hardware: needs a real Windows desktop, a microphone, or whisper.dll"]
+addopts = "-m 'not hardware'"

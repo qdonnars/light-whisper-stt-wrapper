@@ -11,18 +11,17 @@ __version__ = "1.2.0"
 __author__ = "Quentin Donnars"
 __license__ = "MIT"
 
+import array
 import ctypes
 import ctypes.wintypes as w
 import logging
 import os
 import re
+import struct
 import sys
 import threading
 import time
 from pathlib import Path
-
-import array
-import struct
 
 import pyaudio
 import pyperclip
@@ -88,7 +87,7 @@ def _detect_model() -> str:
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     else:
         cfg = {}

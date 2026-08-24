@@ -1,0 +1,7 @@
+# Everything in requirements.txt, plus what you need to test, lint, and build
+# the .exe. Running the app needs none of this.
+-r requirements.txt
+
+pytest>=8.0
+ruff>=0.6
+pyinstaller>=6.19.0
