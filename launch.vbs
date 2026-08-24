@@ -25,8 +25,8 @@ For Each c In candidates
 Next
 
 If pythonExe = "" Then
-  MsgBox "Aucun interpreteur Python signe trouve." & vbCrLf & vbCrLf & _
-         "Installez Python depuis python.org, puis :" & vbCrLf & _
+  MsgBox "No signed Python interpreter found." & vbCrLf & vbCrLf & _
+         "Install Python from python.org, then run:" & vbCrLf & _
          "  py -3.11 -m pip install -r requirements.txt", _
          vbExclamation, "Whisper STT"
   WScript.Quit 1
