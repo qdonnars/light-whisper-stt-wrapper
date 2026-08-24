@@ -198,7 +198,12 @@ Standing on the shoulders of [whisper.cpp](https://github.com/ggerganov/whisper.
 
 `main` holds released, stable code. Day-to-day work lands on `dev` first, so please open pull requests against `dev`.
 
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. It covers the branch model, how to
+set up a source checkout, what to test by hand before opening a pull request, and
+the handful of Windows audio traps that have already caused bugs here.
+
 Released versions and what changed in each are listed in [CHANGELOG.md](CHANGELOG.md).
+Ideas and known rough edges live in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
