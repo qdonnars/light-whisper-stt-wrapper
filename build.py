@@ -54,11 +54,11 @@ def main():
             print(f"  Model {model.name} already present")
 
     print()
-    print(f"Done! Output: dist/whisper_stt/")
+    print("Done! Output: dist/whisper_stt/")
     print()
     print("To distribute (without model):")
     print("  1. Zip dist/whisper_stt/ (excluding .bin files if too large)")
-    print("  2. Users download the model separately via setup.py or Hugging Face")
+    print("  2. Users download the model separately via bootstrap.py or Hugging Face")
     print("  3. Drop the .bin into whisper-cpp/ and run whisper_stt.exe")
 
 
