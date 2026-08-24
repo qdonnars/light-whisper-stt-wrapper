@@ -1087,7 +1087,7 @@ class WhisperSTT:
 
     def _build_menu(self) -> pystray.Menu:
         lang = self.cfg["language"]
-        prompt = self.cfg.get("prompt", "") or "(vide)"
+        prompt = self.cfg.get("prompt", "") or "(none)"
         if len(prompt) > 40:
             prompt = prompt[:37] + "..."
 
@@ -1096,7 +1096,7 @@ class WhisperSTT:
         # there is nothing left to choose here. The `microphone:` key in
         # config.yaml still pins a device by name if that is ever needed.
         return pystray.Menu(
-            pystray.MenuItem(f"Langue: {lang}", pystray.Menu(
+            pystray.MenuItem(f"Language: {lang}", pystray.Menu(
                 pystray.MenuItem("auto", self._make_lang_setter("auto")),
                 pystray.MenuItem("fr", self._make_lang_setter("fr")),
                 pystray.MenuItem("en", self._make_lang_setter("en")),
@@ -1104,12 +1104,12 @@ class WhisperSTT:
             pystray.MenuItem(f"Prompt: {prompt}", self._on_edit_prompt),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Coller automatiquement (Ctrl+V)",
+                "Auto-paste (Ctrl+V)",
                 self._on_toggle_auto_paste,
                 checked=lambda item: self.cfg.get("auto_paste", False),
             ),
             pystray.MenuItem(f"Hotkey: {self.cfg['hotkey']}", None, enabled=False),
-            pystray.MenuItem("Quitter", self._on_quit),
+            pystray.MenuItem("Quit", self._on_quit),
         )
 
     def _make_lang_setter(self, lang: str):
@@ -1117,7 +1117,7 @@ class WhisperSTT:
             self.cfg["language"] = lang
             save_config(self.cfg)
             self._refresh_menu()
-            log.info(f"Langue -> {lang}")
+            log.info(f"Language -> {lang}")
         return setter
 
     def _on_toggle_auto_paste(self, icon, item):
@@ -1138,7 +1138,7 @@ class WhisperSTT:
             root.attributes("-topmost", True)
             result = simpledialog.askstring(
                 "Whisper STT - Prompt",
-                "Mots-cles / jargon pour guider la transcription :",
+                "Keywords or jargon to guide the transcription:",
                 initialvalue=self.cfg.get("prompt", ""),
                 parent=root,
             )
@@ -1170,7 +1170,7 @@ class WhisperSTT:
             mic = self._get_mic_name()[:30]
             if state == "idle" and self._empty_result:
                 self.tray.icon = make_icon(COLORS["empty"])
-                self.tray.title = "Whisper STT - rien transcrit (micro muet ?)"
+                self.tray.title = "Whisper STT - nothing transcribed (muted mic?)"
             elif state == "idle":
                 self.tray.title = f"Whisper STT [{lang}] - {mic}"
             elif state == "recording":
@@ -1297,7 +1297,7 @@ class WhisperSTT:
         # Hotkey
         hk_frame = ttk.Frame(frame)
         hk_frame.pack(fill="x", pady=4)
-        ttk.Label(hk_frame, text="Raccourci :").pack(side="left")
+        ttk.Label(hk_frame, text="Hotkey:").pack(side="left")
         hotkey_var = tk.StringVar(value=self.cfg["hotkey"])
         hotkey_entry = ttk.Entry(hk_frame, textvariable=hotkey_var, width=20)
         hotkey_entry.pack(side="right")
@@ -1310,7 +1310,7 @@ class WhisperSTT:
         # Language
         lang_frame = ttk.Frame(frame)
         lang_frame.pack(fill="x", pady=4)
-        ttk.Label(lang_frame, text="Langue :").pack(side="left")
+        ttk.Label(lang_frame, text="Language:").pack(side="left")
         lang_var = tk.StringVar(value=self.cfg["language"])
         lang_combo = ttk.Combobox(lang_frame, textvariable=lang_var,
                                   values=["auto", "fr", "en", "de", "es", "it"],
@@ -1322,15 +1322,19 @@ class WhisperSTT:
         ttk.Separator(frame).pack(fill="x", pady=8)
         ttk.Label(
             frame,
-            text="Comment ca marche :\n"
-                 "1. Maintenez le raccourci et parlez\n"
-                 "2. Relachez pour transcrire\n"
-                 "3. Le texte est automatiquement colle (Ctrl+V)",
+            # Step 3 used to claim the text was pasted automatically. It has not
+            # been since 1.1.0: the clipboard is the default and auto-paste is
+            # opt in from the tray menu.
+            text="How it works:\n"
+                 "1. Hold the hotkey and speak\n"
+                 "2. Release to transcribe\n"
+                 "3. The text lands on the clipboard, ready to paste\n"
+                 "   (turn on auto-paste in the tray menu to skip that)",
             justify="left", foreground="gray",
         ).pack(anchor="w")
         ttk.Label(
             frame,
-            text="L'application reste dans la barre des taches (en bas a droite).",
+            text="The app stays in the system tray, bottom right.",
             justify="center", foreground="gray",
         ).pack(pady=(6, 0))
 
@@ -1370,10 +1374,10 @@ class WhisperSTT:
 
         log.info("=" * 45)
         log.info(f"Whisper STT v{__version__} - Push-to-talk (Vulkan GPU)")
-        log.info(f"Hotkey : {self.cfg['hotkey']} (maintenir)")
-        log.info(f"Langue : {self.cfg['language']}")
-        log.info(f"Micro  : {self._get_mic_name()}")
-        log.info(f"Prompt : {self.cfg.get('prompt') or '(vide)'}")
+        log.info(f"Hotkey   : {self.cfg['hotkey']} (hold)")
+        log.info(f"Language : {self.cfg['language']}")
+        log.info(f"Mic      : {self._get_mic_name()}")
+        log.info(f"Prompt   : {self.cfg.get('prompt') or '(none)'}")
         log.info("=" * 45)
 
         self._load_engine()
@@ -1401,8 +1405,8 @@ def ensure_single_instance():
         log.warning("Whisper STT is already running.")
         user32.MessageBoxW(
             None,
-            "Whisper STT est déjà en cours d'exécution.\n"
-            "Vérifiez l'icône dans la barre des tâches (en bas à droite).",
+            "Whisper STT is already running.\n"
+            "Look for its icon in the system tray, bottom right.",
             "Whisper STT",
             0x40,  # MB_ICONINFORMATION
         )
