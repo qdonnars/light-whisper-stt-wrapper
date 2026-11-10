@@ -10,21 +10,25 @@ Most speech-to-text tools are heavy, cloud-dependent, or bundled with features y
 
 Most local speech-to-text solutions carry significant overhead, even when they run the same model:
 
-| Stack | Runtime overhead | Requires | Notes |
-|-------|-----------------|----------|-------|
-| OpenAI Whisper (PyTorch) | ~300 MB (Python + PyTorch) | CUDA, ffmpeg | Full ML framework loaded at all times |
-| faster-whisper (CTranslate2) | ~200 MB (Python + CT2) | CUDA | Faster, but still needs a GPU runtime |
-| **Whisper STT (this project)** | **~30 MB (Python only)** | **Nothing extra** | **Direct DLL call via whisper.cpp** |
+| Stack | What you install, besides the model | GPU acceleration |
+|-------|-------------------------------------|------------------|
+| OpenAI Whisper (PyTorch) | Python, PyTorch, ffmpeg. Several GB with the CUDA build | NVIDIA only (CUDA) |
+| faster-whisper (CTranslate2) | Python, CTranslate2, plus the cuDNN and cuBLAS libraries for GPU | NVIDIA only (CUDA) |
+| **Whisper STT (this project)** | **About 100 MB: the app and the whisper.cpp DLLs** | **Any Vulkan GPU: NVIDIA, AMD, Intel, integrated** |
 
 All three run the same Whisper models with comparable accuracy. The difference is the stack. Whisper STT calls whisper.cpp directly via ctypes: no PyTorch, no CUDA runtime, no heavy ML framework. Just a Python script, a DLL, and a model file.
+
+The model itself is the heavy part, whatever the stack: `large-v3-turbo` is 1.6 GB on disk and about 1.8 GB of VRAM once loaded (of RAM, without a GPU). So the app does not hold on to it. After five minutes without a dictation the model is unloaded and that memory goes back to whatever needs it, a game for instance; it loads again while you speak your next take, in a little over a second on a GPU. Measured on an RTX 5090: about 180 MB of RAM with the model loaded, about 100 MB once it is unloaded.
 
 ## Features
 
 - **Push-to-talk:** hold a global hotkey (default `Win+Y`), speak, release to transcribe
 - **Clipboard-first:** the transcription always lands on the clipboard and in the `Win+V` history. Auto-paste (Ctrl+V injection) is opt-in
-- **System tray:** minimal UI with language selection, prompt editing, and an auto-paste toggle
+- **System tray:** minimal UI with prompt editing, an auto-paste toggle, and the settings. While you hold the hotkey the icon is a red ring with a green core that grows with your voice, so a muted microphone shows before the take is over, not after
+- **Out of the way:** a setup dialog at the first launch, then nothing. It can start with Windows, and the settings stay one click away in the tray menu
 - **Fully local:** no internet required, nothing leaves your machine
 - **Fast:** whisper.cpp with Vulkan GPU acceleration when available, CPU otherwise
+- **Light when idle:** the model is unloaded after a few minutes without dictation and its VRAM is given back; it reloads on the next hotkey press
 - **Zero microphone setup:** the app follows the Windows default input, resolves it to its WASAPI endpoint, opens it at the device's native sample rate, and skips virtual microphones
 - **Configurable:** language, hotkey, model, and transcription prompt via `config.yaml`
 
@@ -89,7 +93,7 @@ No Python needed. Download, extract, run.
 
 > **Checking what you downloaded:** every release note lists the SHA256 of its zip. Since the executable is not signed, this is the way to confirm you got the file that was published. Compare it before extracting:
 > ```
-> certutil -hashfile whisper-stt-v1.3.0-win-x64.zip SHA256
+> certutil -hashfile whisper-stt-v1.4.0-win-x64.zip SHA256
 > ```
 
 ## Installation (from source)
@@ -169,10 +173,12 @@ python whisper_stt.py
 
 Right-click the tray icon to:
 
-- Switch language (auto, English, French, and the rest of the Whisper set)
 - Edit the transcription prompt, useful for jargon and proper nouns
 - Toggle auto-paste (off by default)
+- Open the settings shown at the first launch: hotkey (click it, then press the keys), the languages you dictate in, whether dictations are kept in the log, whether the app starts with Windows, and how long the model stays loaded when idle
 - Quit
+
+The icon tells you what the app is doing: blue when idle, a red ring while recording (with a green core that follows your voice), orange while transcribing, and grey when the last take produced nothing.
 
 ### Configuration
 
@@ -180,19 +186,25 @@ All settings live in `config.yaml`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `language` | `auto` | Transcription language (`auto`, `fr`, `en`, and so on) |
-| `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns) |
+| `language` | `auto` | `auto`, or one Whisper code to force that language. Ticking a single language in the settings does the same |
+| `auto_languages` | `[]` | Languages `auto` may choose from, e.g. `[fr, en]`. Ticked in the settings dialog; any other Whisper code can be added here. Empty means any language, which misfires on short takes |
+| `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns). Write it the way you speak, with the misheard words used in a sentence |
 | `hotkey` | `win+y` | Push-to-talk hotkey |
-| `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
+| `model` | best one found | Path to the GGML model. Left out, the app uses the best model present in `whisper-cpp/` |
 | `microphone` | `null` | Leave as `null` to follow the Windows default. To pin a device, give its **name**, never an index: PortAudio indices shift when devices sleep or reconnect |
 | `auto_paste` | `false` | Inject Ctrl+V after copying. Off by default, so the text simply waits on the clipboard |
+| `unload_after_minutes` | `5` | Minutes without a dictation before the model is unloaded and its memory released. It reloads on the next hotkey press. `0` keeps it loaded; anything under a minute counts as one. Also in the settings dialog |
+| `gpu_device` | `null` | Which GPU runs the model. `null` picks a dedicated card over an integrated one. A number forces one of the GPUs listed in the log at startup |
+| `log_transcriptions` | `true` | Write what you dictate to `whisper_stt.log`. Set to `false`, or untick the box at startup, to keep only timings and diagnostics there |
 
 ## Troubleshooting
 
 The app writes everything it does to `whisper_stt.log`, next to the executable or the script. Start there.
 
 - **Silent recordings:** check that the Windows default input is a real microphone and not a virtual device (Steam Streaming, OBS, VB-Cable). The app already skips known virtual mics, but an aggressive noise gate on the headset can also produce silence.
-- **The hotkey does nothing:** another application may already own `Win+Y`. Change `hotkey` in `config.yaml`. Note that `Win+H` is reserved by Windows dictation.
+- **The hotkey does nothing:** another application may already own `Win+Y`. Pick another one from **Settings** in the tray menu. Note that `Win+H` is reserved by Windows dictation.
+- **The ring stays empty while you speak:** no sound is reaching the app. The take will not be transcribed; check the microphone mute and any noise gate.
+- **Transcription takes tens of seconds:** check the `Model loaded on ...` line in the log. On a machine with an integrated chip and a graphics card, the model must be on the card; the app chooses it, and `gpu_device` in `config.yaml` forces it.
 - **No GPU acceleration:** the binaries downloaded by `bootstrap.py` are CPU-only. Follow the Vulkan section above to get GPU support.
 
 ## Author

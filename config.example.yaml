@@ -4,14 +4,23 @@
 # Language: "auto", "fr", "en", etc.
 language: auto
 
-# Prompt to guide transcription (jargon, proper nouns)
+# Languages "auto" may choose from. Empty means any of Whisper's ~100, which
+# goes wrong on short takes (French heard as Spanish or Icelandic). If you only
+# dictate in a few languages, list them, e.g. [fr, en]. The settings dialog
+# has checkboxes for the common ones; any other Whisper code can go here.
+auto_languages: []
+
+# Prompt to guide transcription (jargon, proper nouns). Works best written the
+# way you speak, with the words that get misheard used in a sentence or two,
+# e.g. "On merge le repo en dev, puis on déploie le MCP en prod."
 prompt: ""
 
 # Push-to-talk hotkey (hold to record, release to transcribe)
 hotkey: win+y
 
-# Path to the model (relative to the script directory)
-model: whisper-cpp/ggml-large-v3-turbo.bin
+# Path to the model, relative to the app's folder. Left out, the app uses the
+# best model it finds in whisper-cpp/ (large-v3-turbo, medium, small, tiny).
+# model: whisper-cpp/ggml-large-v3-turbo.bin
 
 # Input device NAME (not an index), e.g. "Microphone (PRO X 2 LIGHTSPEED)".
 # null follows the Windows default.
@@ -19,3 +28,16 @@ microphone: null
 
 # Auto-paste transcription into the active window
 auto_paste: false
+
+# Minutes without a dictation before the model is unloaded and its memory
+# (about 1.8 GB of VRAM, or of RAM without a GPU) is released. It loads again
+# when you press the hotkey. 0 keeps it loaded.
+unload_after_minutes: 5
+
+# Which GPU runs the model. null picks a dedicated card over an integrated
+# one. A number forces one of the GPUs the log lists at startup.
+gpu_device: null
+
+# Write what you dictate to whisper_stt.log. false keeps timings and
+# diagnostics in the log but not the words. Also a checkbox at startup.
+log_transcriptions: true

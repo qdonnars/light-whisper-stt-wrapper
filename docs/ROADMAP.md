@@ -25,9 +25,6 @@ ship, and to [CHANGELOG.md](../CHANGELOG.md) when they are released.
 - **Per-language prompts.** The transcription prompt is global, but the jargon
   worth priming differs by language. Storing one prompt per language would make
   the feature usable when switching between English and French.
-- **Configurable hotkey from the tray.** The hotkey is only changeable in
-  `config.yaml`, which requires restarting the app. `RegisterHotKey` can be
-  re-registered at runtime.
 - **A rolling log file.** `whisper_stt.log` grows without bound. Switching to
   `RotatingFileHandler` is a small change and stops the file reaching hundreds
   of megabytes on a machine that is never restarted.
