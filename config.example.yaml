@@ -18,8 +18,9 @@ prompt: ""
 # Push-to-talk hotkey (hold to record, release to transcribe)
 hotkey: win+y
 
-# Path to the model (relative to the script directory)
-model: whisper-cpp/ggml-large-v3-turbo.bin
+# Path to the model, relative to the app's folder. Left out, the app uses the
+# best model it finds in whisper-cpp/ (large-v3-turbo, medium, small, tiny).
+# model: whisper-cpp/ggml-large-v3-turbo.bin
 
 # Input device NAME (not an index), e.g. "Microphone (PRO X 2 LIGHTSPEED)".
 # null follows the Windows default.

@@ -7,7 +7,7 @@ Author:  Quentin Donnars <https://github.com/qdonnars>
 License: MIT
 """
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __author__ = "Quentin Donnars"
 __license__ = "MIT"
 
@@ -119,6 +119,33 @@ def language_choices(configured) -> list[str]:
 
 
 MIN_UNLOAD_MINUTES = 1.0
+
+
+def format_minutes(value) -> str:
+    """The unload delay as the settings dialog shows it: '5', '2.5', '0'."""
+    try:
+        minutes = max(float(value), 0.0)
+    except (TypeError, ValueError):
+        minutes = float(DEFAULT_CONFIG["unload_after_minutes"])
+    return f"{minutes:g}"
+
+
+def parse_minutes(text: str, previous):
+    """What was typed in the settings dialog, or *previous* if it is not a delay.
+
+    A comma is accepted as the decimal mark, and anything between zero and
+    the minimum is raised to it, so the box never holds a value the app would
+    silently treat differently.
+    """
+    try:
+        minutes = float(str(text).strip().replace(",", "."))
+    except ValueError:
+        return previous
+    if minutes < 0 or minutes != minutes:
+        return previous
+    if 0 < minutes < MIN_UNLOAD_MINUTES:
+        minutes = MIN_UNLOAD_MINUTES
+    return int(minutes) if minutes == int(minutes) else minutes
 
 
 def should_unload(idle_seconds: float, minutes, busy: bool) -> bool:
@@ -1888,7 +1915,7 @@ class WhisperSTT:
 
         # Center on screen
         root.update_idletasks()
-        w, h = 420, 415
+        w, h = 420, 445
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -1978,6 +2005,15 @@ class WhisperSTT:
             variable=autostart_var,
         ).pack(anchor="w")
 
+        # How long the model may sit unused before its memory is given back.
+        unload_frame = ttk.Frame(frame)
+        unload_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(unload_frame, text="Free the model's memory after").pack(side="left")
+        unload_var = tk.StringVar(value=format_minutes(self.cfg.get("unload_after_minutes")))
+        ttk.Spinbox(unload_frame, from_=0, to=240, increment=1, width=4,
+                    textvariable=unload_var).pack(side="left", padx=6)
+        ttk.Label(unload_frame, text="min idle (0: never)").pack(side="left")
+
         # Usage reminder
         ttk.Separator(frame).pack(fill="x", pady=8)
         ttk.Label(
@@ -2011,6 +2047,8 @@ class WhisperSTT:
             if selected and self.cfg["language"] not in ("auto", *selected):
                 self.cfg["language"] = "auto"
             self.cfg["log_transcriptions"] = bool(keep_text_var.get())
+            self.cfg["unload_after_minutes"] = parse_minutes(
+                unload_var.get(), self.cfg.get("unload_after_minutes"))
             self.cfg["setup_done"] = True
             save_config(self.cfg)
             autostart = bool(autostart_var.get())

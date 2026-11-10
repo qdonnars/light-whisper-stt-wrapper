@@ -261,3 +261,25 @@ def test_the_index_counts_gpus_only_like_whisper_cpp_does():
 def test_no_gpu_at_all_gives_none():
     assert whisper_stt.pick_gpu([(CPU, 16 * GB)]) is None
     assert whisper_stt.pick_gpu([]) is None
+
+
+# ─── unload delay, as typed in the settings dialog ───────────────────────────
+
+
+@pytest.mark.parametrize("typed, expected", [
+    ("5", 5), ("0", 0), (" 10 ", 10), ("2.5", 2.5), ("2,5", 2.5), ("0.2", 1), ("240", 240),
+])
+def test_a_typed_delay_is_understood(typed, expected):
+    assert whisper_stt.parse_minutes(typed, previous=5) == expected
+
+
+@pytest.mark.parametrize("typed", ["", "soon", "-3", "nan"])
+def test_nonsense_keeps_the_previous_delay(typed):
+    assert whisper_stt.parse_minutes(typed, previous=7) == 7
+
+
+@pytest.mark.parametrize(
+    "value, shown", [(5, "5"), (2.5, "2.5"), (0, "0"), (None, "5"), ("x", "5")]
+)
+def test_the_delay_is_shown_without_a_trailing_zero(value, shown):
+    assert whisper_stt.format_minutes(value) == shown

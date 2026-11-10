@@ -13,6 +13,9 @@ a = Analysis(
     hiddenimports=[
         "pystray._win32",
     ],
+    # Pillow imports numpy if it is there, and PyInstaller then ships it: 30 MB
+    # the app never uses. Whatever else sits in the build environment stays out.
+    excludes=["numpy", "charset_normalizer"],
     noarchive=False,
 )
 

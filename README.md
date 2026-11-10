@@ -93,7 +93,7 @@ No Python needed. Download, extract, run.
 
 > **Checking what you downloaded:** every release note lists the SHA256 of its zip. Since the executable is not signed, this is the way to confirm you got the file that was published. Compare it before extracting:
 > ```
-> certutil -hashfile whisper-stt-v1.3.0-win-x64.zip SHA256
+> certutil -hashfile whisper-stt-v1.4.0-win-x64.zip SHA256
 > ```
 
 ## Installation (from source)
@@ -175,7 +175,7 @@ Right-click the tray icon to:
 
 - Edit the transcription prompt, useful for jargon and proper nouns
 - Toggle auto-paste (off by default)
-- Open the settings shown at the first launch: hotkey (click it, then press the keys), the languages you dictate in, whether dictations are kept in the log, and whether the app starts with Windows
+- Open the settings shown at the first launch: hotkey (click it, then press the keys), the languages you dictate in, whether dictations are kept in the log, whether the app starts with Windows, and how long the model stays loaded when idle
 - Quit
 
 The icon tells you what the app is doing: blue when idle, a red ring while recording (with a green core that follows your voice), orange while transcribing, and grey when the last take produced nothing.
@@ -190,10 +190,10 @@ All settings live in `config.yaml`:
 | `auto_languages` | `[]` | Languages `auto` may choose from, e.g. `[fr, en]`. Ticked in the settings dialog; any other Whisper code can be added here. Empty means any language, which misfires on short takes |
 | `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns). Write it the way you speak, with the misheard words used in a sentence |
 | `hotkey` | `win+y` | Push-to-talk hotkey |
-| `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
+| `model` | best one found | Path to the GGML model. Left out, the app uses the best model present in `whisper-cpp/` |
 | `microphone` | `null` | Leave as `null` to follow the Windows default. To pin a device, give its **name**, never an index: PortAudio indices shift when devices sleep or reconnect |
 | `auto_paste` | `false` | Inject Ctrl+V after copying. Off by default, so the text simply waits on the clipboard |
-| `unload_after_minutes` | `5` | Minutes without a dictation before the model is unloaded and its memory released. It reloads on the next hotkey press. `0` keeps it loaded; anything under a minute counts as one |
+| `unload_after_minutes` | `5` | Minutes without a dictation before the model is unloaded and its memory released. It reloads on the next hotkey press. `0` keeps it loaded; anything under a minute counts as one. Also in the settings dialog |
 | `gpu_device` | `null` | Which GPU runs the model. `null` picks a dedicated card over an integrated one. A number forces one of the GPUs listed in the log at startup |
 | `log_transcriptions` | `true` | Write what you dictate to `whisper_stt.log`. Set to `false`, or untick the box at startup, to keep only timings and diagnostics there |
 

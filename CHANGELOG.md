@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-11-10
 
 ### Fixed
 
@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The format follows
 - Quit always quits. It waited for a running transcription on the tray's own
   thread, freezing the menu, and an error while freeing the model skipped the
   exit altogether, leaving Task Manager as the only way out.
+- `config.example.yaml` no longer names a model. The small download ships
+  `ggml-small.bin`, so a config copied from the example pointed at a file that
+  was not there. Without the key, the app uses the best model it finds.
 - A silent recording is no longer sent to whisper. Whisper never answers
   "nothing" to silence: it returned subtitle credits, "Thank you", or the
   prompt read back, and auto-paste typed that into the focused window.
@@ -55,10 +58,12 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The model is unloaded after five minutes without a dictation
-  (`unload_after_minutes`, `0` to keep it loaded, never under one minute) and loaded again when the
-  hotkey is pressed. It used to hold about 1.8 GB of VRAM for as long as the
+  (`unload_after_minutes`, also in the settings dialog; `0` keeps it loaded, and
+  it is never under one minute) and loaded again when the hotkey is pressed. It used to hold about 1.8 GB of VRAM for as long as the
   app ran, including while a game wanted it. Reloading takes a little over a
   second on a GPU and happens while the take is being spoken.
+- The standalone build no longer ships numpy, which Pillow pulled in when it
+  happened to be installed on the build machine.
 - The README compares what each stack installs and which GPUs it supports.
   The memory figures it gave were not measurements.
 - The setup dialog is shown at the first launch only. It used to come up at
@@ -189,6 +194,7 @@ First public release.
 - Standalone `.exe` packaging through PyInstaller, plus a `setup.py` that
   downloads the whisper.cpp binaries and the model.
 
+[1.4.0]: https://github.com/qdonnars/light-whisper-stt-wrapper/releases/tag/v1.4.0
 [1.3.0]: https://github.com/qdonnars/light-whisper-stt-wrapper/releases/tag/v1.3.0
 [1.2.0]: https://github.com/qdonnars/light-whisper-stt-wrapper/releases/tag/v1.2.0
 [1.1.0]: https://github.com/qdonnars/light-whisper-stt-wrapper/releases/tag/v1.1.0
