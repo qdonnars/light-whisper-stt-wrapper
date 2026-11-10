@@ -200,3 +200,64 @@ def test_auto_paste_stays_off_unless_asked(config_file):
     """Clipboard first is the documented default; a typo must not enable pasting."""
     config_file.write_text("language: fr\n", encoding="utf-8")
     assert load_config()["auto_paste"] is False
+
+
+# ─── should_unload ───────────────────────────────────────────────────────────
+
+
+def test_the_model_is_unloaded_once_the_delay_has_passed():
+    assert whisper_stt.should_unload(299, 5, busy=False) is False
+    assert whisper_stt.should_unload(300, 5, busy=False) is True
+
+
+def test_a_take_in_progress_is_never_interrupted():
+    assert whisper_stt.should_unload(10_000, 5, busy=True) is False
+
+
+@pytest.mark.parametrize("minutes", [0, None, "", "never", -1])
+def test_zero_or_nonsense_keeps_the_model_loaded(minutes):
+    assert whisper_stt.should_unload(10_000, minutes, busy=False) is False
+
+
+def test_the_delay_cannot_be_set_under_a_minute():
+    """Loading and freeing a GPU model every few seconds is hard on the driver."""
+    assert whisper_stt.should_unload(30, 0.05, busy=False) is False
+    assert whisper_stt.should_unload(60, 0.05, busy=False) is True
+
+
+# ─── pick_gpu ────────────────────────────────────────────────────────────────
+
+GB = 1 << 30
+CPU, GPU, IGPU = 0, whisper_stt.DEV_GPU, whisper_stt.DEV_IGPU
+
+
+def test_a_graphics_card_wins_over_the_integrated_chip_listed_first():
+    """The exact machine this broke on: Vulkan0 integrated, Vulkan1 the card.
+    whisper.cpp's default of 0 ran the model on the integrated chip."""
+    assert whisper_stt.pick_gpu([(IGPU, 16 * GB), (GPU, 32 * GB), (CPU, 32 * GB)]) == 1
+
+
+def test_the_card_is_still_chosen_when_it_comes_first():
+    assert whisper_stt.pick_gpu([(GPU, 32 * GB), (IGPU, 16 * GB), (CPU, 32 * GB)]) == 0
+
+
+def test_an_integrated_chip_with_more_memory_does_not_beat_a_card():
+    assert whisper_stt.pick_gpu([(IGPU, 48 * GB), (GPU, 8 * GB)]) == 1
+
+
+def test_between_two_cards_the_larger_one_wins():
+    assert whisper_stt.pick_gpu([(GPU, 8 * GB), (GPU, 24 * GB)]) == 1
+
+
+def test_a_laptop_with_only_an_integrated_chip_uses_it():
+    assert whisper_stt.pick_gpu([(IGPU, 8 * GB), (CPU, 16 * GB)]) == 0
+
+
+def test_the_index_counts_gpus_only_like_whisper_cpp_does():
+    """A CPU entry ahead of the card must not shift the index."""
+    assert whisper_stt.pick_gpu([(CPU, 32 * GB), (IGPU, 16 * GB), (GPU, 32 * GB)]) == 1
+
+
+def test_no_gpu_at_all_gives_none():
+    assert whisper_stt.pick_gpu([(CPU, 16 * GB)]) is None
+    assert whisper_stt.pick_gpu([]) is None

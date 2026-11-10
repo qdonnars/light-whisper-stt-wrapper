@@ -79,3 +79,12 @@ def test_layout_matches_the_installed_dll():
     engine._lib = ctypes.CDLL(os.path.join(whisper_stt.DLL_DIR, "whisper.dll"))
     engine._setup_functions()
     engine._verify_params_layout()  # raises LayoutMismatch if the DLL moved on
+
+
+def test_gpu_device_sits_where_whisper_h_puts_it():
+    # struct whisper_context_params, whisper.cpp v1.8.3: two bools, then the int.
+    head = whisper_stt.WhisperContextParamsHead
+    assert head.use_gpu.offset == 0
+    assert head.flash_attn.offset == 1
+    assert head.gpu_device.offset == 4
+    assert head.dtw_n_top.offset == 16

@@ -28,6 +28,15 @@ microphone: null
 # Auto-paste transcription into the active window
 auto_paste: false
 
+# Minutes without a dictation before the model is unloaded and its memory
+# (about 1.8 GB of VRAM, or of RAM without a GPU) is released. It loads again
+# when you press the hotkey. 0 keeps it loaded.
+unload_after_minutes: 5
+
+# Which GPU runs the model. null picks a dedicated card over an integrated
+# one. A number forces one of the GPUs the log lists at startup.
+gpu_device: null
+
 # Write what you dictate to whisper_stt.log. false keeps timings and
 # diagnostics in the log but not the words. Also a checkbox at startup.
 log_transcriptions: true

@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The model now runs on the graphics card when the machine also has an
+  integrated chip. whisper.cpp takes the first GPU Vulkan lists, and that
+  order belongs to the drivers: after a driver update the integrated chip came
+  first and a take went from 0.2 s to 40 s. The app lists the devices, logs
+  them, and picks a dedicated card over an integrated one (`gpu_device` in
+  `config.yaml` forces one).
+- A GPU reset no longer leaves the app broken until it is restarted. A native
+  error out of whisper.dll now drops the dead context, reloads the model and
+  retries the take once.
+- Quit always quits. It waited for a running transcription on the tray's own
+  thread, freezing the menu, and an error while freeing the model skipped the
+  exit altogether, leaving Task Manager as the only way out.
 - A silent recording is no longer sent to whisper. Whisper never answers
   "nothing" to silence: it returned subtitle credits, "Thank you", or the
   prompt read back, and auto-paste typed that into the focused window.
@@ -42,6 +54,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The model is unloaded after five minutes without a dictation
+  (`unload_after_minutes`, `0` to keep it loaded, never under one minute) and loaded again when the
+  hotkey is pressed. It used to hold about 1.8 GB of VRAM for as long as the
+  app ran, including while a game wanted it. Reloading takes a little over a
+  second on a GPU and happens while the take is being spoken.
+- The README compares what each stack installs and which GPUs it supports.
+  The memory figures it gave were not measurements.
 - The setup dialog is shown at the first launch only. It used to come up at
   every start and, once it was where the hotkey got chosen, held the hotkey
   back until someone clicked Start.

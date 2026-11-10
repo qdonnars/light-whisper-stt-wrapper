@@ -79,6 +79,14 @@ DEFAULT_CONFIG = {
     # Set once the setup dialog has been through "Start". The dialog then stays
     # out of the way at launch and is reached from the tray menu instead.
     "setup_done": False,
+    # Minutes without a dictation after which the model is unloaded, giving its
+    # memory back (about 1.8 GB of VRAM on a GPU, of RAM without one). It is
+    # loaded again when the hotkey is pressed. 0 keeps it loaded for good.
+    "unload_after_minutes": 5,
+    # Which GPU runs the model. None lets the app choose: a dedicated card
+    # over an integrated one, the one with the most memory. A number forces
+    # whisper.cpp's own device index (see the log line listing the devices).
+    "gpu_device": None,
 }
 
 # Models in preference order (best first)
@@ -108,6 +116,23 @@ def language_choices(configured) -> list[str]:
     """Languages to offer as checkboxes: the common ones, then the user's own."""
     extra = [str(c) for c in configured or () if str(c) not in COMMON_LANGUAGES]
     return [*COMMON_LANGUAGES, *dict.fromkeys(extra)]
+
+
+MIN_UNLOAD_MINUTES = 1.0
+
+
+def should_unload(idle_seconds: float, minutes, busy: bool) -> bool:
+    """True when the model has sat unused long enough to be worth unloading."""
+    try:
+        minutes = float(minutes)
+    except (TypeError, ValueError):
+        return False
+    if minutes <= 0:
+        return False
+    # Never under a minute: loading and freeing a GPU model in a tight loop is
+    # hard on the driver for no benefit to anyone.
+    limit = max(minutes, MIN_UNLOAD_MINUTES) * 60
+    return not busy and idle_seconds >= limit
 
 
 def load_config() -> dict:
@@ -591,10 +616,68 @@ def pick_language(probs, allowed_ids: dict[str, int]) -> str | None:
     return best[0] if best else None
 
 
+# ggml's device types (enum ggml_backend_dev_type).
+DEV_GPU = 1    # dedicated
+DEV_IGPU = 2   # integrated, sharing the system's RAM
+
+
+def pick_gpu(devices) -> int | None:
+    """Choose the device to run on, as the index whisper.cpp expects.
+
+    *devices* is ggml's device list in registry order, as (type, total_bytes)
+    pairs. whisper.cpp's `gpu_device` counts only the GPU and integrated-GPU
+    entries of that list, and its default of 0 simply takes the first one.
+
+    The first one is whatever Vulkan happens to enumerate first. On a desktop
+    with an integrated chip next to a graphics card that order is the
+    driver's business: after a driver update it flipped, the model landed on
+    the integrated chip, and a take that took 0.2 s took 40 s, with nothing
+    in the log to say why. So: a dedicated card over an integrated one, and
+    among equals the one with the most memory.
+    """
+    best = None
+    rank = 0
+    for dev_type, total in devices:
+        if dev_type not in (DEV_GPU, DEV_IGPU):
+            continue
+        key = (dev_type == DEV_GPU, total)
+        if best is None or key > best[0]:
+            best = (key, rank)
+        rank += 1
+    return best[1] if best else None
+
+
+class WhisperContextParamsHead(ctypes.Structure):
+    """The first fields of struct whisper_context_params (whisper.cpp v1.8.3).
+
+    Only what is needed to choose the device, and enough after it to check
+    that the fields are where this says they are.
+    """
+
+    _fields_ = [
+        ("use_gpu", ctypes.c_bool),
+        ("flash_attn", ctypes.c_bool),
+        ("gpu_device", ctypes.c_int),
+        ("dtw_token_timestamps", ctypes.c_bool),
+        ("dtw_aheads_preset", ctypes.c_int),
+        ("dtw_n_top", ctypes.c_int),
+    ]
+
+
+_CONTEXT_PARAMS_FINGERPRINT = (
+    ("use_gpu", True),
+    ("flash_attn", True),
+    ("gpu_device", 0),
+    ("dtw_token_timestamps", False),
+    ("dtw_aheads_preset", 0),
+    ("dtw_n_top", -1),
+)
+
+
 class WhisperEngine:
     """Thin ctypes wrapper around whisper.dll (Vulkan-compiled)."""
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, gpu_device: int | None = None):
         if ctypes.sizeof(ctypes.c_void_p) != 8:
             raise LayoutMismatchError(
                 "Whisper STT needs 64-bit Python: the whisper.cpp parameter "
@@ -612,12 +695,72 @@ class WhisperEngine:
         self._lock = threading.Lock()
 
         cparams = self._lib.whisper_context_default_params_by_ref()
-        model_bytes = str(BASE_DIR / model_path).encode("utf-8")
-        self._ctx = self._lib.whisper_init_from_file_with_params(model_bytes, cparams)
-        self._lib.whisper_free_context_params(cparams)
+        try:
+            where = self._choose_device(cparams, gpu_device)
+            model_bytes = str(BASE_DIR / model_path).encode("utf-8")
+            self._ctx = self._lib.whisper_init_from_file_with_params(model_bytes, cparams)
+        finally:
+            self._lib.whisper_free_context_params(cparams)
         if not self._ctx:
             raise RuntimeError(f"Failed to load whisper model: {model_path}")
-        log.info("Model loaded on GPU")
+        log.info(f"Model loaded on {where}")
+
+    def _list_devices(self) -> list[tuple[int, int, str]]:
+        """ggml's devices in registry order, as (type, total_bytes, label)."""
+        reg = ctypes.CDLL(os.path.join(DLL_DIR, "ggml.dll"))
+        base = ctypes.CDLL(os.path.join(DLL_DIR, "ggml-base.dll"))
+        reg.ggml_backend_dev_count.restype = ctypes.c_size_t
+        reg.ggml_backend_dev_get.restype = ctypes.c_void_p
+        reg.ggml_backend_dev_get.argtypes = [ctypes.c_size_t]
+        base.ggml_backend_dev_type.restype = ctypes.c_int
+        base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
+        base.ggml_backend_dev_description.restype = ctypes.c_char_p
+        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
+        base.ggml_backend_dev_memory.restype = None
+        base.ggml_backend_dev_memory.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+        devices = []
+        for i in range(reg.ggml_backend_dev_count()):
+            dev = reg.ggml_backend_dev_get(i)
+            free, total = ctypes.c_size_t(), ctypes.c_size_t()
+            base.ggml_backend_dev_memory(dev, ctypes.byref(free), ctypes.byref(total))
+            label = (base.ggml_backend_dev_description(dev) or b"?").decode("utf-8", "replace")
+            devices.append((base.ggml_backend_dev_type(dev), total.value, label.strip()))
+        return devices
+
+    def _choose_device(self, cparams, forced: int | None) -> str:
+        """Point whisper.cpp at the right device. Returns its name, for the log.
+
+        Any surprise here leaves whisper.cpp's own default in place: a wrong
+        device is slow, a crash at startup is worse.
+        """
+        try:
+            devices = self._list_devices()
+        except (OSError, AttributeError) as e:
+            log.warning(f"Could not list the compute devices ({e}); whisper.cpp will choose")
+            return "whisper.cpp's default device"
+        gpus = [d for d in devices if d[0] in (DEV_GPU, DEV_IGPU)]
+        for rank, (dev_type, total, label) in enumerate(gpus):
+            kind = "dedicated" if dev_type == DEV_GPU else "integrated"
+            log.info(f"GPU {rank}: {label} ({kind}, {total >> 20} MB)")
+        if not gpus:
+            return "the CPU (no GPU found)"
+
+        rank = forced if isinstance(forced, int) and not isinstance(forced, bool) else None
+        if rank is not None and not 0 <= rank < len(gpus):
+            log.warning(f"gpu_device: {rank} does not exist, choosing automatically")
+            rank = None
+        if rank is None:
+            rank = pick_gpu([(t, total) for t, total, _ in devices])
+
+        head = WhisperContextParamsHead.from_address(cparams)
+        mismatches = self._compare(head, _CONTEXT_PARAMS_FINGERPRINT)
+        if mismatches:
+            log.warning("whisper_context_params is not laid out as expected, leaving the "
+                        "device to whisper.cpp: " + "; ".join(mismatches))
+            return "whisper.cpp's default device"
+        head.gpu_device = rank
+        return gpus[rank][2]
 
     def _setup_functions(self):
         lib = self._lib
@@ -810,9 +953,12 @@ class WhisperEngine:
         return value
 
     def close(self):
-        if self._ctx:
-            self._lib.whisper_free(self._ctx)
-            self._ctx = None
+        # Under the lock: freeing the context under a running decode would
+        # take the process down.
+        with self._lock:
+            if self._ctx:
+                self._lib.whisper_free(self._ctx)
+                self._ctx = None
 
 
 # ─── Audio ───────────────────────────────────────────────────────────────────
@@ -1319,6 +1465,11 @@ class WhisperSTT:
         self.processing = False
         self.tray: pystray.Icon | None = None
         self.engine: WhisperEngine | None = None
+        # The model comes and goes: unloaded after a while without dictation,
+        # loaded again on the next hotkey press. This lock makes the two
+        # exclusive, and a take that arrives mid-load simply waits for it.
+        self._engine_lock = threading.Lock()
+        self._last_used = time.monotonic()
         self._running = True
         self._empty_result = False
         self._mic_name: str | None = None
@@ -1341,9 +1492,54 @@ class WhisperSTT:
         save_config(self.cfg)
         log.info(f"Migrated microphone index {wanted} to {name or 'System default'}")
 
-    def _load_engine(self):
-        log.info("Loading model (this takes a few seconds)...")
-        self.engine = WhisperEngine(self.cfg["model"])
+    def _load_engine(self) -> WhisperEngine:
+        """Return the engine, loading the model first if it is not in memory."""
+        with self._engine_lock:
+            if self.engine is None:
+                log.info("Loading model...")
+                t0 = time.perf_counter()
+                self.engine = WhisperEngine(self.cfg["model"], self.cfg.get("gpu_device"))
+                log.info(f"Model ready in {time.perf_counter() - t0:.1f}s")
+            self._last_used = time.monotonic()
+            return self.engine
+
+    def _preload_engine(self):
+        """Start loading as soon as the hotkey goes down.
+
+        Measured at 1.1 to 1.4 s on a GPU, so on any take longer than that the
+        model is back before the speaker has finished and nothing is felt.
+        """
+        try:
+            self._load_engine()
+        except Exception as e:
+            log.error(f"Loading the model: {e}")
+
+    def _unload_if_idle(self):
+        """Give the model's memory back once nobody has dictated for a while.
+
+        Loaded, the model holds about 1.8 GB of VRAM for as long as the app
+        runs, which is exactly what a game started later would want. Measured:
+        closing the engine returns all of it, every time.
+        """
+        if self.engine is None or not should_unload(
+            time.monotonic() - self._last_used,
+            self.cfg.get("unload_after_minutes"),
+            busy=self.recording or self.processing,
+        ):
+            return
+        # Not blocking: if a load or a take has the lock, the model is in use.
+        if not self._engine_lock.acquire(blocking=False):
+            return
+        try:
+            if self.engine is not None and not (self.recording or self.processing):
+                self.engine.close()
+                self.engine = None
+                log.info(f"Model unloaded after {self.cfg['unload_after_minutes']} min "
+                         "without dictation; it loads again on the next take")
+                if self.tray:
+                    self.tray.title = "Whisper STT - asleep, wakes on the next take"
+        finally:
+            self._engine_lock.release()
 
     # ── Tray menu ──
 
@@ -1465,9 +1661,24 @@ class WhisperSTT:
     def _on_quit(self, icon, item):
         log.info("Quit")
         self._running = False
-        if self.engine:
-            self.engine.close()
-        icon.stop()
+        # Quit must always quit. This runs on the tray's own thread: waiting
+        # here for a running transcription froze the menu, and an error while
+        # freeing the model skipped icon.stop() altogether, so the app could
+        # only be ended from Task Manager. The model is freed if that can be
+        # done at once; otherwise the process ending frees it just as well.
+        try:
+            busy = self.recording or self.processing
+            if not busy and self._engine_lock.acquire(blocking=False):
+                try:
+                    if self.engine:
+                        self.engine.close()
+                        self.engine = None
+                finally:
+                    self._engine_lock.release()
+        except Exception as e:
+            log.warning(f"Freeing the model on quit: {e}")
+        finally:
+            icon.stop()
 
     def _refresh_menu(self):
         if self.tray:
@@ -1504,6 +1715,8 @@ class WhisperSTT:
         self._mic_name = name or "default"
         self._set_state("recording")
         log.info("Recording...")
+        if self.engine is None:
+            threading.Thread(target=self._preload_engine, daemon=True).start()
         self.recorder = Recorder(device_index=idx, expected_name=name)
         self.recorder.start()
 
@@ -1528,15 +1741,41 @@ class WhisperSTT:
             self.processing = False
             self._set_state("idle")
 
+    def _drop_engine(self):
+        """Forget an engine whose device is gone, without trusting it to close."""
+        with self._engine_lock:
+            engine, self.engine = self.engine, None
+        if engine is not None:
+            try:
+                engine.close()
+            except Exception as e:
+                log.warning(f"Closing the broken engine: {e}")
+
+    def _run_engine(self, audio: array.array) -> str:
+        engine = self._load_engine()   # waits here if it is still loading
+        return engine.transcribe(
+            audio,
+            language=self.cfg["language"],
+            prompt=self.cfg.get("prompt", ""),
+            auto_languages=self.cfg.get("auto_languages") or (),
+        )
+
     def _transcribe_worker(self, audio: array.array):
         try:
             t0 = time.perf_counter()
-            text = self.engine.transcribe(
-                audio,
-                language=self.cfg["language"],
-                prompt=self.cfg.get("prompt", ""),
-                auto_languages=self.cfg.get("auto_languages") or (),
-            )
+            try:
+                text = self._run_engine(audio)
+            except OSError as e:
+                # A native error out of whisper.dll, typically the GPU having
+                # been reset under it (0xe06d7363 after a driver timeout). The
+                # context is dead for good: every later take failed the same
+                # way until the app was restarted. Load a fresh one and try
+                # this take again, once.
+                log.error(f"Transcription failed in whisper.dll ({e}); "
+                          "reloading the model and retrying once")
+                self._drop_engine()
+                t0 = time.perf_counter()
+                text = self._run_engine(audio)
             elapsed = time.perf_counter() - t0
             if self.cfg.get("log_transcriptions", True):
                 log.info(f"Transcribed in {elapsed:.2f}s: {text}")
@@ -1552,6 +1791,7 @@ class WhisperSTT:
         except Exception as e:
             log.error(f"Transcription: {e}")
         finally:
+            self._last_used = time.monotonic()
             self.processing = False
             self._set_state("idle")
 
@@ -1562,8 +1802,13 @@ class WhisperSTT:
         msg = w.MSG()
         registered = False
         seen_gen = None
+        next_idle_check = 0.0
 
         while self._running:
+            if time.monotonic() >= next_idle_check:
+                next_idle_check = time.monotonic() + 5.0
+                self._unload_if_idle()
+
             if self._settings_open:
                 if registered:
                     user32.UnregisterHotKey(None, HOTKEY_ID)
