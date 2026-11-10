@@ -22,7 +22,8 @@ All three run the same Whisper models with comparable accuracy. The difference i
 
 - **Push-to-talk:** hold a global hotkey (default `Win+Y`), speak, release to transcribe
 - **Clipboard-first:** the transcription always lands on the clipboard and in the `Win+V` history. Auto-paste (Ctrl+V injection) is opt-in
-- **System tray:** minimal UI with language selection, prompt editing, and an auto-paste toggle
+- **System tray:** minimal UI with prompt editing, an auto-paste toggle, and the settings. While you hold the hotkey the icon is a red ring with a green core that grows with your voice, so a muted microphone shows before the take is over, not after
+- **Out of the way:** a setup dialog at the first launch, then nothing. It can start with Windows, and the settings stay one click away in the tray menu
 - **Fully local:** no internet required, nothing leaves your machine
 - **Fast:** whisper.cpp with Vulkan GPU acceleration when available, CPU otherwise
 - **Zero microphone setup:** the app follows the Windows default input, resolves it to its WASAPI endpoint, opens it at the device's native sample rate, and skips virtual microphones
@@ -169,10 +170,12 @@ python whisper_stt.py
 
 Right-click the tray icon to:
 
-- Switch language (auto, English, French, and the rest of the Whisper set)
 - Edit the transcription prompt, useful for jargon and proper nouns
 - Toggle auto-paste (off by default)
+- Open the settings shown at the first launch: hotkey (click it, then press the keys), the languages you dictate in, whether dictations are kept in the log, and whether the app starts with Windows
 - Quit
+
+The icon tells you what the app is doing: blue when idle, a red ring while recording (with a green core that follows your voice), orange while transcribing, and grey when the last take produced nothing.
 
 ### Configuration
 
@@ -180,19 +183,22 @@ All settings live in `config.yaml`:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `language` | `auto` | Transcription language (`auto`, `fr`, `en`, and so on) |
-| `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns) |
+| `language` | `auto` | `auto`, or one Whisper code to force that language. Ticking a single language in the settings does the same |
+| `auto_languages` | `[]` | Languages `auto` may choose from, e.g. `[fr, en]`. Ticked in the settings dialog; any other Whisper code can be added here. Empty means any language, which misfires on short takes |
+| `prompt` | `""` | Prompt to guide transcription (jargon, proper nouns). Write it the way you speak, with the misheard words used in a sentence |
 | `hotkey` | `win+y` | Push-to-talk hotkey |
 | `model` | `whisper-cpp/ggml-large-v3-turbo.bin` | Path to the GGML model |
 | `microphone` | `null` | Leave as `null` to follow the Windows default. To pin a device, give its **name**, never an index: PortAudio indices shift when devices sleep or reconnect |
 | `auto_paste` | `false` | Inject Ctrl+V after copying. Off by default, so the text simply waits on the clipboard |
+| `log_transcriptions` | `true` | Write what you dictate to `whisper_stt.log`. Set to `false`, or untick the box at startup, to keep only timings and diagnostics there |
 
 ## Troubleshooting
 
 The app writes everything it does to `whisper_stt.log`, next to the executable or the script. Start there.
 
 - **Silent recordings:** check that the Windows default input is a real microphone and not a virtual device (Steam Streaming, OBS, VB-Cable). The app already skips known virtual mics, but an aggressive noise gate on the headset can also produce silence.
-- **The hotkey does nothing:** another application may already own `Win+Y`. Change `hotkey` in `config.yaml`. Note that `Win+H` is reserved by Windows dictation.
+- **The hotkey does nothing:** another application may already own `Win+Y`. Pick another one from **Settings** in the tray menu. Note that `Win+H` is reserved by Windows dictation.
+- **The ring stays empty while you speak:** no sound is reaching the app. The take will not be transcribed; check the microphone mute and any noise gate.
 - **No GPU acceleration:** the binaries downloaded by `bootstrap.py` are CPU-only. Follow the Vulkan section above to get GPU support.
 
 ## Author

@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A silent recording is no longer sent to whisper. Whisper never answers
+  "nothing" to silence: it returned subtitle credits, "Thank you", or the
+  prompt read back, and auto-paste typed that into the focused window.
+- A transcription that is only the prompt read back is discarded.
+- The hotkey no longer goes dead after a take that captured no audio. The
+  `processing` flag was only cleared by the transcription thread, which never
+  started in that case.
+- The prompt now applies to the whole recording. It only primed the first 30
+  seconds; later windows were decoded without it.
+
+### Added
+
+- `auto_languages` restricts what `auto` may detect, for example `[fr, en]`.
+  The languages are ticked in the setup dialog, none by default; ticking a
+  single one forces it, so the tray's language submenu is gone. Detection across all of Whisper's languages
+  misfires on short takes, where French came back as Spanish or Icelandic. It
+  replaces whisper's own detection pass, so it costs no extra time.
+- `log_transcriptions`, also a checkbox in the startup dialog. Nothing leaves
+  the machine, but the log was still a plain-text record of every dictation.
+  Turned off, it keeps timings and diagnostics and drops the words.
+- The hotkey is set by pressing it in the setup dialog instead of typing its
+  name.
+- **Start with Windows**, a checkbox in the setup dialog. It writes a per-user
+  `Run` entry, needs no admin rights, and shows up in Task Manager's Startup
+  tab.
+- **Settings** in the tray menu reopens the setup dialog. The hotkey is
+  released while it is open and registered again on closing, so a new hotkey
+  applies without a restart.
+- The recording icon shows the input level: a red ring, with a green core that
+  grows with the voice. A plain red dot looked the same whether or not any
+  sound was arriving.
+
+### Changed
+
+- The setup dialog is shown at the first launch only. It used to come up at
+  every start and, once it was where the hotkey got chosen, held the hotkey
+  back until someone clicked Start.
+- The prompt is edited in a resizable multi-line window. The one-line box
+  showed about 40 characters of it.
+- A hotkey that cannot be registered no longer ends the hotkey thread; another
+  one can be picked from Settings.
+
 ## [1.3.0] - 2026-08-24
 
 ### Fixed

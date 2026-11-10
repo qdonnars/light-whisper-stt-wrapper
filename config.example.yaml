@@ -4,7 +4,15 @@
 # Language: "auto", "fr", "en", etc.
 language: auto
 
-# Prompt to guide transcription (jargon, proper nouns)
+# Languages "auto" may choose from. Empty means any of Whisper's ~100, which
+# goes wrong on short takes (French heard as Spanish or Icelandic). If you only
+# dictate in a few languages, list them, e.g. [fr, en]. The settings dialog
+# has checkboxes for the common ones; any other Whisper code can go here.
+auto_languages: []
+
+# Prompt to guide transcription (jargon, proper nouns). Works best written the
+# way you speak, with the words that get misheard used in a sentence or two,
+# e.g. "On merge le repo en dev, puis on déploie le MCP en prod."
 prompt: ""
 
 # Push-to-talk hotkey (hold to record, release to transcribe)
@@ -19,3 +27,7 @@ microphone: null
 
 # Auto-paste transcription into the active window
 auto_paste: false
+
+# Write what you dictate to whisper_stt.log. false keeps timings and
+# diagnostics in the log but not the words. Also a checkbox at startup.
+log_transcriptions: true

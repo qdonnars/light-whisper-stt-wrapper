@@ -14,13 +14,16 @@ __license__ = "MIT"
 import array
 import ctypes
 import ctypes.wintypes as w
+import gc
 import logging
+import math
 import os
 import re
 import struct
 import sys
 import threading
 import time
+import winreg
 from pathlib import Path
 
 import pyaudio
@@ -66,6 +69,16 @@ DEFAULT_CONFIG = {
     # Off by default: the transcription always lands on the clipboard, and you
     # choose where to paste it (and it stays in the Win+V history).
     "auto_paste": False,
+    # Languages "auto" may pick from, e.g. ["fr", "en"]. Empty means all of
+    # Whisper's. See WhisperEngine._detect_among().
+    "auto_languages": [],
+    # Write what was dictated to whisper_stt.log. Handy for seeing what whisper
+    # mishears, but it is a plain-text record of everything said; turned off,
+    # the log keeps the timings and the diagnostics and drops the words.
+    "log_transcriptions": True,
+    # Set once the setup dialog has been through "Start". The dialog then stays
+    # out of the way at launch and is reached from the tray menu instead.
+    "setup_done": False,
 }
 
 # Models in preference order (best first)
@@ -85,6 +98,18 @@ def _detect_model() -> str:
     return _MODEL_CANDIDATES[0]  # fallback, will error later with a clear message
 
 
+# Offered as checkboxes in the settings dialog. Whisper knows about a hundred
+# languages; any other code can be listed under auto_languages in config.yaml
+# and then shows up here as well.
+COMMON_LANGUAGES = ("fr", "en", "de", "es", "it", "pt", "nl")
+
+
+def language_choices(configured) -> list[str]:
+    """Languages to offer as checkboxes: the common ones, then the user's own."""
+    extra = [str(c) for c in configured or () if str(c) not in COMMON_LANGUAGES]
+    return [*COMMON_LANGUAGES, *dict.fromkeys(extra)]
+
+
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH, encoding="utf-8") as f:
@@ -100,6 +125,45 @@ def load_config() -> dict:
 def save_config(cfg: dict):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+
+
+# ─── Start with Windows ──────────────────────────────────────────────────────
+
+# The per-user Run key: no admin rights, and it shows up in Task Manager's
+# Startup tab, where it can be switched off like any other entry.
+AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_NAME = "WhisperSTT"
+
+
+def autostart_command() -> str:
+    """What Windows should run at sign-in to start this copy of the app."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    # From source, go through launch.vbs: it starts without a console window
+    # and picks an interpreter the machine's policy accepts.
+    return f'wscript.exe "{BASE_DIR / "launch.vbs"}"'
+
+
+def is_autostart_enabled(name: str = AUTOSTART_NAME) -> bool:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
+            winreg.QueryValueEx(key, name)
+            return True
+    except OSError:
+        return False
+
+
+def set_autostart(enabled: bool, name: str = AUTOSTART_NAME):
+    """Add or remove the Run entry. Enabling rewrites it, so a moved folder heals."""
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY, 0,
+                        winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, name)
+            except FileNotFoundError:
+                pass
 
 
 # ─── Windows Hotkey (RegisterHotKey API) ─────────────────────────────────────
@@ -487,6 +551,46 @@ def is_hallucination(text: str) -> bool:
     )
 
 
+def is_prompt_echo(text: str, prompt: str) -> bool:
+    """True when the transcription is just the prompt read back.
+
+    Given little or no speech, whisper continues the only text it has: the
+    prompt. In the log this showed up as "IA HuggingFace MCP throughput JEV
+    Gemma" on the clipboard, sometimes twice in a row, sometimes missing its
+    first word. So an echo is a run of the prompt's own words, in order,
+    covering at least half of it. The length floor is what keeps a dictated
+    word that merely appears in the prompt from being thrown away.
+    """
+    said = _normalize_for_match(text).split()
+    primed = _normalize_for_match(prompt).split()
+    if not said or not primed:
+        return False
+    floor = max(3, (len(primed) + 1) // 2)
+    i = 0
+    while i < len(said):
+        # Longest run of the prompt, from any of its words, that starts here.
+        run = 0
+        for start in range(len(primed)):
+            n = 0
+            while (i + n < len(said) and start + n < len(primed)
+                   and said[i + n] == primed[start + n]):
+                n += 1
+            run = max(run, n)
+        if run < floor:
+            return False
+        i += run
+    return True
+
+
+def pick_language(probs, allowed_ids: dict[str, int]) -> str | None:
+    """Most probable language among the allowed ones, None when there is none."""
+    best = None
+    for code, lang_id in allowed_ids.items():
+        if 0 <= lang_id < len(probs) and (best is None or probs[lang_id] > probs[best[1]]):
+            best = (code, lang_id)
+    return best[0] if best else None
+
+
 class WhisperEngine:
     """Thin ctypes wrapper around whisper.dll (Vulkan-compiled)."""
 
@@ -536,6 +640,17 @@ class WhisperEngine:
         lib.whisper_free_params.argtypes = [ctypes.c_void_p]
         lib.whisper_free_context_params.restype = None
         lib.whisper_free_context_params.argtypes = [ctypes.c_void_p]
+        # Language detection restricted to a few languages, see _detect_among().
+        lib.whisper_pcm_to_mel.restype = ctypes.c_int
+        lib.whisper_pcm_to_mel.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float),
+                                           ctypes.c_int, ctypes.c_int]
+        lib.whisper_lang_auto_detect.restype = ctypes.c_int
+        lib.whisper_lang_auto_detect.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                                 ctypes.POINTER(ctypes.c_float)]
+        lib.whisper_lang_id.restype = ctypes.c_int
+        lib.whisper_lang_id.argtypes = [ctypes.c_char_p]
+        lib.whisper_lang_max_id.restype = ctypes.c_int
+        lib.whisper_lang_max_id.argtypes = []
 
     def _verify_params_layout(self):
         """Fail at startup if the DLL's struct is not the one we mirror.
@@ -581,16 +696,54 @@ class WhisperEngine:
         return mismatches
 
     def transcribe(self, audio: array.array, language: str = "auto",
-                   prompt: str = "") -> str:
+                   prompt: str = "", auto_languages=()) -> str:
         # Serialised: the DLL reads through pointers into self._pinned for the
         # whole of whisper_full(), so a concurrent call clearing that list
         # would free a buffer mid-decode. The tray also guards against
         # re-entry, but the invariant belongs here, next to the memory it
         # protects.
         with self._lock:
-            return self._transcribe(audio, language, prompt)
+            return self._transcribe(audio, language, prompt, auto_languages)
 
-    def _transcribe(self, audio: array.array, language: str, prompt: str) -> str:
+    def _detect_among(self, c_audio, n_samples: int, n_threads: int,
+                      allowed) -> str | None:
+        """Auto-detect, but only among *allowed*. None means "let whisper choose".
+
+        Plain auto-detection picks from about a hundred languages, and on a
+        take of a second or two it regularly picks wrong: French speech came
+        back as "Víkona", "¿Estás?" or "Andre andre is Kuchimata". Someone who
+        dictates in two languages only needs the better of those two.
+
+        This costs nothing extra. whisper_full() runs this very detection when
+        the language is null; doing it here and handing it the answer replaces
+        that pass instead of adding one.
+        """
+        ids = {}
+        for code in allowed:
+            lang_id = self._lib.whisper_lang_id(str(code).encode("utf-8"))
+            if lang_id < 0:
+                log.warning(f"auto_languages: {code!r} is not a whisper language, ignored")
+            else:
+                ids[str(code)] = lang_id
+        if not ids:
+            return None
+        if len(ids) == 1:
+            return next(iter(ids))
+        if self._lib.whisper_pcm_to_mel(self._ctx, c_audio, n_samples, n_threads) != 0:
+            log.warning("Language detection: could not compute the spectrogram")
+            return None
+        probs = (ctypes.c_float * (self._lib.whisper_lang_max_id() + 1))()
+        if self._lib.whisper_lang_auto_detect(self._ctx, 0, n_threads, probs) < 0:
+            log.warning("Language detection failed; letting whisper choose")
+            return None
+        chosen = pick_language(probs, ids)
+        if chosen:
+            detail = ", ".join(f"{c} {probs[i]:.2f}" for c, i in ids.items())
+            log.info(f"Language detected: {chosen} ({detail})")
+        return chosen
+
+    def _transcribe(self, audio: array.array, language: str, prompt: str,
+                    auto_languages=()) -> str:
         self._pinned.clear()
         params_ptr = self._lib.whisper_full_default_params_by_ref(0)
         if not params_ptr:
@@ -598,6 +751,17 @@ class WhisperEngine:
             return ""
         try:
             params = WhisperFullParams.from_address(params_ptr)
+
+            # Convert array.array('f') to ctypes float pointer
+            c_audio = ctypes.cast(
+                (ctypes.c_float * len(audio)).from_buffer(audio),
+                ctypes.POINTER(ctypes.c_float),
+            )
+
+            if (not language or language == "auto") and auto_languages:
+                language = self._detect_among(
+                    c_audio, len(audio), params.n_threads, auto_languages
+                )
 
             if language and language != "auto":
                 params.language = self._pin(language.encode("utf-8"))
@@ -607,14 +771,13 @@ class WhisperEngine:
 
             if prompt:
                 params.initial_prompt = self._pin(prompt.encode("utf-8"))
+                # Without this the prompt only primes the first 30 seconds:
+                # every later window is conditioned on the text before it
+                # instead, and the jargon the prompt was there for is on its
+                # own again. One take in six runs past 30 seconds.
+                params.carry_initial_prompt = True
 
-            # Convert array.array('f') to ctypes float pointer
-            c_audio = (ctypes.c_float * len(audio)).from_buffer(audio)
-            ret = self._lib.whisper_full(
-                self._ctx, params_ptr,
-                ctypes.cast(c_audio, ctypes.POINTER(ctypes.c_float)),
-                len(audio),
-            )
+            ret = self._lib.whisper_full(self._ctx, params_ptr, c_audio, len(audio))
             if ret != 0:
                 log.error(f"whisper_full error: {ret}")
                 return ""
@@ -635,6 +798,9 @@ class WhisperEngine:
         if is_hallucination(text):
             if text:
                 log.info(f"Discarded as a silence hallucination: {text!r}")
+            return ""
+        if is_prompt_echo(text, prompt):
+            log.info(f"Discarded, it is the prompt read back: {text!r}")
             return ""
         return text
 
@@ -887,6 +1053,9 @@ class Recorder:
         self._recording = False
         self._reader: threading.Thread | None = None
         self._cached_rate: int | None = None
+        # Peak of the latest chunk, 0.0 to 1.0. Read by the tray while the
+        # take is running, to show that sound is actually arriving.
+        self.level = 0.0
 
     def start(self):
         self._pa = pyaudio.PyAudio()
@@ -965,6 +1134,8 @@ class Recorder:
             try:
                 data = stream.read(CHUNK, exception_on_overflow=False)
                 self._frames.append(data)
+                chunk = array.array("h", data)
+                self.level = max(max(chunk), -min(chunk)) / 32768.0 if chunk else 0.0
             except Exception as e:
                 # Losing the device mid-recording (headset sleeping, another app
                 # taking the input) used to end up as a silent empty result.
@@ -1032,8 +1203,14 @@ class Recorder:
                 f"Recorded {duration:.1f}s but the signal is silent: {level}. "
                 f"{'Nothing arrived at all' if live < 1 else 'Mic alive but crushed'}: "
                 "muted mic, or a noise gate (G HUB Blue VO!CE, NVIDIA Broadcast, "
-                "Discord noise suppression)?"
+                "Discord noise suppression)? Not transcribed."
             )
+            # Whisper never answers "nothing" to silence: it returns subtitle
+            # credits, "Thank you", or the prompt read back, and with
+            # auto-paste on that lands in whatever window has the focus. Of
+            # 101 takes under this level in the log, none held real speech and
+            # 26 came back with invented text.
+            return None
         else:
             log.info(f"Recorded {duration:.1f}s, {level}")
         return resample(audio, self.rate, WHISPER_RATE)
@@ -1077,6 +1254,7 @@ def deliver_text(text: str, auto_paste: bool):
 COLORS = {
     "idle": "#4a9eff",
     "recording": "#ff4444",
+    "hearing": "#3ddc84",    # core of the recording icon while sound comes in
     "processing": "#ffaa00",
     "empty": "#888888",   # transcription came back empty (silent mic?)
 }
@@ -1088,6 +1266,47 @@ def make_icon(color: str) -> Image.Image:
     draw = ImageDraw.Draw(img)
     draw.ellipse([4, 4, size - 4, size - 4], fill=color)
     return img
+
+
+# While recording, the icon is a red ring with a green core that grows with the
+# voice. A plain red dot said "recording" whether or not any sound was coming
+# in, so a muted mic was only discovered once the take was over.
+LEVEL_STEPS = 5
+LEVEL_FLOOR_DB = 20 * math.log10(SILENCE_PEAK)   # below this: ring only
+LEVEL_TOP_DB = -6.0                              # at or above: full core
+LEVEL_DECAY = 0.6        # per refresh, so the core falls back instead of flickering
+LEVEL_REFRESH = 0.1      # seconds between icon updates
+
+
+def level_step(peak: float) -> int:
+    """Map a peak (0.0 to 1.0) to 0 (nothing heard) .. LEVEL_STEPS (loud).
+
+    In decibels, because loudness is heard that way: on a linear scale normal
+    speech would sit in the bottom step and only a shout would move the icon.
+    """
+    if peak < SILENCE_PEAK:
+        return 0
+    db = 20 * math.log10(min(peak, 1.0))
+    span = (db - LEVEL_FLOOR_DB) / (LEVEL_TOP_DB - LEVEL_FLOOR_DB)
+    return max(1, min(LEVEL_STEPS, 1 + int(span * LEVEL_STEPS)))
+
+
+_recording_icons: dict[int, Image.Image] = {}
+
+
+def make_recording_icon(step: int) -> Image.Image:
+    """Red ring, plus a green core sized by *step*. Cached: there are six."""
+    if step not in _recording_icons:
+        size = 64
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([3, 3, size - 3, size - 3], outline=COLORS["recording"], width=9)
+        if step > 0:
+            r = 6 + step * 3
+            c = size // 2
+            draw.ellipse([c - r, c - r, c + r, c + r], fill=COLORS["hearing"])
+        _recording_icons[step] = img
+    return _recording_icons[step]
 
 
 # ─── App ─────────────────────────────────────────────────────────────────────
@@ -1103,6 +1322,12 @@ class WhisperSTT:
         self._running = True
         self._empty_result = False
         self._mic_name: str | None = None
+        # The settings dialog needs the hotkey unregistered while it is open,
+        # or the key press never reaches it. RegisterHotKey belongs to the
+        # thread that called it, so the dialog asks and the hotkey thread does.
+        self._settings_open = False
+        self._hotkey_free = threading.Event()
+        self._hotkey_gen = 0
         self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
         self._migrate_microphone_setting()
 
@@ -1123,7 +1348,6 @@ class WhisperSTT:
     # ── Tray menu ──
 
     def _build_menu(self) -> pystray.Menu:
-        lang = self.cfg["language"]
         prompt = self.cfg.get("prompt", "") or "(none)"
         if len(prompt) > 40:
             prompt = prompt[:37] + "..."
@@ -1132,12 +1356,9 @@ class WhisperSTT:
         # to it (WASAPI endpoint, native sample rate, virtual mics skipped), so
         # there is nothing left to choose here. The `microphone:` key in
         # config.yaml still pins a device by name if that is ever needed.
+        # No language menu either: the languages are ticked in Settings, and
+        # ticking a single one is how a language gets forced.
         return pystray.Menu(
-            pystray.MenuItem(f"Language: {lang}", pystray.Menu(
-                pystray.MenuItem("auto", self._make_lang_setter("auto")),
-                pystray.MenuItem("fr", self._make_lang_setter("fr")),
-                pystray.MenuItem("en", self._make_lang_setter("en")),
-            )),
             pystray.MenuItem(f"Prompt: {prompt}", self._on_edit_prompt),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
@@ -1146,16 +1367,9 @@ class WhisperSTT:
                 checked=lambda item: self.cfg.get("auto_paste", False),
             ),
             pystray.MenuItem(f"Hotkey: {self.cfg['hotkey']}", None, enabled=False),
+            pystray.MenuItem("Settings...", self._on_settings),
             pystray.MenuItem("Quit", self._on_quit),
         )
-
-    def _make_lang_setter(self, lang: str):
-        def setter(icon, item):
-            self.cfg["language"] = lang
-            save_config(self.cfg)
-            self._refresh_menu()
-            log.info(f"Language -> {lang}")
-        return setter
 
     def _on_toggle_auto_paste(self, icon, item):
         self.cfg["auto_paste"] = not self.cfg.get("auto_paste", False)
@@ -1167,26 +1381,86 @@ class WhisperSTT:
         threading.Thread(target=self._prompt_dialog, daemon=True).start()
 
     def _prompt_dialog(self):
+        """Edit the prompt in a box large enough to read all of it.
+
+        This was a one-line askstring() about 40 characters wide: a prompt of
+        a few sentences scrolled out of sight, and the window title was cut
+        off as well.
+        """
         try:
             import tkinter as tk
-            from tkinter import simpledialog
+            from tkinter import ttk
+
             root = tk.Tk()
-            root.withdraw()
+            root.title("Whisper STT: prompt")
             root.attributes("-topmost", True)
-            result = simpledialog.askstring(
-                "Whisper STT - Prompt",
-                "Keywords or jargon to guide the transcription:",
-                initialvalue=self.cfg.get("prompt", ""),
-                parent=root,
-            )
-            root.destroy()
-            if result is not None:
-                self.cfg["prompt"] = result
+            w, h = 560, 330
+            x = (root.winfo_screenwidth() - w) // 2
+            y = (root.winfo_screenheight() - h) // 2
+            root.geometry(f"{w}x{h}+{x}+{y}")
+            root.minsize(400, 240)
+
+            frame = ttk.Frame(root, padding=16)
+            frame.pack(fill="both", expand=True)
+            ttk.Label(
+                frame, justify="left", wraplength=w - 40,
+                text="Words whisper should know: jargon, product and people names.\n"
+                     "Written the way you speak works best, e.g. a sentence or two "
+                     "using them. Keep it under about 100 words.",
+            ).pack(anchor="w")
+
+            buttons = ttk.Frame(frame)
+            buttons.pack(side="bottom", fill="x", pady=(10, 0))
+            text = tk.Text(frame, wrap="word", font=("Segoe UI", 10), undo=True,
+                           padx=6, pady=6)
+            text.pack(fill="both", expand=True, pady=(8, 0))
+            text.insert("1.0", self.cfg.get("prompt", "") or "")
+            text.focus_set()
+
+            result = {"value": None}
+
+            def on_save():
+                # A prompt is one line of context; line breaks would only
+                # reach whisper as noise.
+                result["value"] = " ".join(text.get("1.0", "end").split())
+                root.destroy()
+
+            ttk.Button(buttons, text="Cancel", command=root.destroy).pack(side="right")
+            ttk.Button(buttons, text="Save", command=on_save).pack(side="right", padx=(0, 8))
+            root.bind("<Escape>", lambda event: root.destroy())
+            root.bind("<Control-Return>", lambda event: on_save())
+            root.mainloop()
+
+            if result["value"] is not None:
+                self.cfg["prompt"] = result["value"]
                 save_config(self.cfg)
                 self._refresh_menu()
-                log.info(f"Prompt -> {result}")
+                log.info(f"Prompt -> {result['value']}")
         except Exception as e:
             log.error(f"Prompt dialog: {e}")
+        finally:
+            gc.collect()   # free the Tk objects on the thread that made them
+
+    def _on_settings(self, icon, item):
+        threading.Thread(target=self._settings_from_tray, daemon=True).start()
+
+    def _settings_from_tray(self):
+        if self._settings_open or self.recording or self.processing:
+            return
+        self._settings_open = True
+        try:
+            # Wait for the hotkey thread to let go of the hotkey.
+            self._hotkey_free.wait(timeout=1.0)
+            self._show_settings_dialog()
+        except Exception as e:
+            log.error(f"Settings dialog: {e}")
+        finally:
+            self._hotkey_gen += 1   # register again, with whatever was chosen
+            self._settings_open = False
+            self._refresh_menu()
+            # Tk objects must be freed by the thread that made them. Left to a
+            # later collection on another thread, Tcl aborts the process.
+            gc.collect()
 
     def _on_quit(self, icon, item):
         log.info("Quit")
@@ -1202,7 +1476,10 @@ class WhisperSTT:
 
     def _set_state(self, state: str):
         if self.tray:
-            self.tray.icon = make_icon(COLORS[state])
+            if state == "recording":
+                self.tray.icon = make_recording_icon(0)
+            else:
+                self.tray.icon = make_icon(COLORS[state])
             lang = self.cfg["language"]
             mic = self._get_mic_name()[:30]
             if state == "idle" and self._empty_result:
@@ -1244,6 +1521,11 @@ class WhisperSTT:
                 target=self._transcribe_worker, args=(audio,), daemon=True,
             ).start()
         else:
+            # Nothing to transcribe: a silent take, or no audio at all. Leaving
+            # `processing` set here made the hotkey ignore every later press
+            # until the app was restarted.
+            self._empty_result = True
+            self.processing = False
             self._set_state("idle")
 
     def _transcribe_worker(self, audio: array.array):
@@ -1253,9 +1535,13 @@ class WhisperSTT:
                 audio,
                 language=self.cfg["language"],
                 prompt=self.cfg.get("prompt", ""),
+                auto_languages=self.cfg.get("auto_languages") or (),
             )
             elapsed = time.perf_counter() - t0
-            log.info(f"Transcribed in {elapsed:.2f}s: {text}")
+            if self.cfg.get("log_transcriptions", True):
+                log.info(f"Transcribed in {elapsed:.2f}s: {text}")
+            else:
+                log.info(f"Transcribed in {elapsed:.2f}s ({len(text)} characters, text not logged)")
             if text.strip():
                 deliver_text(text, auto_paste=self.cfg.get("auto_paste", False))
             else:
@@ -1273,17 +1559,34 @@ class WhisperSTT:
 
     def _hotkey_loop(self):
         """Runs on a dedicated thread. Registers hotkey and pumps Windows messages."""
-        mods = self._hotkey_mods | 0x4000  # MOD_NOREPEAT
-        vk = self._hotkey_vk
-
-        if not user32.RegisterHotKey(None, HOTKEY_ID, mods, vk):
-            log.error(f"FAILED to register {self.cfg['hotkey']}! Taken by another app?")
-            return
-
-        log.info(f"Hotkey registered: {self.cfg['hotkey']}")
         msg = w.MSG()
+        registered = False
+        seen_gen = None
 
         while self._running:
+            if self._settings_open:
+                if registered:
+                    user32.UnregisterHotKey(None, HOTKEY_ID)
+                    registered = False
+                self._hotkey_free.set()
+                time.sleep(0.05)
+                continue
+
+            if seen_gen != self._hotkey_gen:
+                # First pass, or the settings dialog just closed.
+                seen_gen = self._hotkey_gen
+                self._hotkey_free.clear()
+                if registered:
+                    user32.UnregisterHotKey(None, HOTKEY_ID)
+                mods = self._hotkey_mods | 0x4000  # MOD_NOREPEAT
+                registered = bool(user32.RegisterHotKey(None, HOTKEY_ID, mods, self._hotkey_vk))
+                if registered:
+                    log.info(f"Hotkey registered: {self.cfg['hotkey']}")
+                else:
+                    # Keep running: the tray's Settings can pick another one.
+                    log.error(f"FAILED to register {self.cfg['hotkey']}! Taken by another app? "
+                              "Choose another one from Settings in the tray menu.")
+
             # Check for WM_HOTKEY messages (non-blocking)
             if user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
                 if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
@@ -1296,21 +1599,40 @@ class WhisperSTT:
             else:
                 time.sleep(0.01)
 
-        user32.UnregisterHotKey(None, HOTKEY_ID)
+        if registered:
+            user32.UnregisterHotKey(None, HOTKEY_ID)
 
     def _wait_for_release(self):
-        """Poll GetAsyncKeyState until the trigger key is released."""
+        """Poll until the trigger key is released, animating the icon meanwhile."""
         vk = self._hotkey_vk
+        shown = 0
+        smoothed = 0.0
+        next_refresh = 0.0
         while self._running:
             # GetAsyncKeyState: high bit set = key is down
             if not (user32.GetAsyncKeyState(vk) & 0x8000):
                 return
+            now = time.perf_counter()
+            if now >= next_refresh and self.recorder and self.tray:
+                next_refresh = now + LEVEL_REFRESH
+                # Rise at once, fall gradually: follows the voice without
+                # blinking off between two syllables.
+                smoothed = max(self.recorder.level, smoothed * LEVEL_DECAY)
+                step = level_step(smoothed)
+                if step != shown:
+                    shown = step
+                    self.tray.icon = make_recording_icon(step)
             time.sleep(0.02)
 
-    # ── Startup dialog ──
+    # ── Settings dialog ──
 
-    def _show_startup_dialog(self):
-        """Setup dialog on launch: hotkey, language, and a reminder about the tray."""
+    def _show_settings_dialog(self):
+        """Hotkey, language, logging, autostart, and a reminder about the tray.
+
+        Shown at the first launch, then only from the tray menu: asking every
+        time kept the hotkey unregistered until someone clicked Start, which is
+        no good for an app meant to start with Windows and be forgotten.
+        """
         import tkinter as tk
         from tkinter import ttk
 
@@ -1321,7 +1643,7 @@ class WhisperSTT:
 
         # Center on screen
         root.update_idletasks()
-        w, h = 420, 385
+        w, h = 420, 415
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -1378,19 +1700,38 @@ class WhisperSTT:
 
         # No microphone picker here on purpose: Windows already owns that
         # choice, and asking at launch made people pick a device before they
-        # had any reason to. The tray menu keeps it as an override for when
-        # the Windows default is the wrong one.
+        # had any reason to. `microphone:` in config.yaml pins one by name for
+        # when the Windows default is the wrong one.
 
-        # Language
+        # Languages: which ones "auto" may choose from. The user ticks them;
+        # the app does not assume any. Ticking a single one forces it.
+        ttk.Label(frame, text="Languages you dictate in:").pack(anchor="w", pady=(4, 0))
         lang_frame = ttk.Frame(frame)
-        lang_frame.pack(fill="x", pady=4)
-        ttk.Label(lang_frame, text="Language:").pack(side="left")
-        lang_var = tk.StringVar(value=self.cfg["language"])
-        lang_combo = ttk.Combobox(lang_frame, textvariable=lang_var,
-                                  values=["auto", "fr", "en", "de", "es", "it"],
-                                  state="readonly", width=20)
-        lang_combo.set(self.cfg["language"])
-        lang_combo.pack(side="right")
+        lang_frame.pack(fill="x")
+        chosen = self.cfg.get("auto_languages") or []
+        lang_vars = {}
+        for code in language_choices(chosen):
+            lang_vars[code] = tk.BooleanVar(value=code in chosen)
+            ttk.Checkbutton(lang_frame, text=code, variable=lang_vars[code]).pack(side="left")
+        ttk.Label(frame, text="None ticked: any language. Others go in config.yaml",
+                  foreground="gray").pack(anchor="w")
+
+        # Everything stays on the machine, but the log is still a plain-text
+        # record of every dictation. Keeping it is a choice, so it is asked.
+        keep_text_var = tk.BooleanVar(value=self.cfg.get("log_transcriptions", True))
+        ttk.Checkbutton(
+            frame, text="Keep what I dictate in the log file",
+            variable=keep_text_var,
+        ).pack(anchor="w", pady=(6, 0))
+
+        # The registry is the truth here, not config.yaml: the entry can also
+        # be switched off from Task Manager's Startup tab.
+        autostart_was = is_autostart_enabled()
+        autostart_var = tk.BooleanVar(value=autostart_was)
+        ttk.Checkbutton(
+            frame, text="Start with Windows",
+            variable=autostart_var,
+        ).pack(anchor="w")
 
         # Usage reminder
         ttk.Separator(frame).pack(fill="x", pady=8)
@@ -1418,11 +1759,28 @@ class WhisperSTT:
                 hotkey_var.set(capture["previous"])
             # Save settings
             self.cfg["hotkey"] = hotkey_var.get().strip()
-            self.cfg["language"] = lang_var.get()
+            selected = [code for code, var in lang_vars.items() if var.get()]
+            self.cfg["auto_languages"] = selected
+            # A language forced in config.yaml that is not among the ticked
+            # ones would silently win over them.
+            if selected and self.cfg["language"] not in ("auto", *selected):
+                self.cfg["language"] = "auto"
+            self.cfg["log_transcriptions"] = bool(keep_text_var.get())
+            self.cfg["setup_done"] = True
             save_config(self.cfg)
+            autostart = bool(autostart_var.get())
+            if autostart or autostart_was:
+                try:
+                    set_autostart(autostart)
+                    log.info(f"Start with Windows -> {autostart}"
+                             + (f" ({autostart_command()})" if autostart else ""))
+                except OSError as e:
+                    log.error(f"Could not update the Windows startup entry: {e}")
             self._hotkey_mods, self._hotkey_vk = parse_hotkey(self.cfg["hotkey"])
             log.info(f"Config updated: hotkey={self.cfg['hotkey']}, "
-                     f"lang={self.cfg['language']}")
+                     f"lang={self.cfg['language']}, "
+                     f"languages={self.cfg['auto_languages'] or 'any'}, "
+                     f"log_transcriptions={self.cfg['log_transcriptions']}")
             root.destroy()
 
         ttk.Button(frame, text="Start", command=on_ok).pack(pady=(10, 0))
@@ -1462,7 +1820,8 @@ class WhisperSTT:
         # The dialog comes before the hotkey is registered: it is where the
         # hotkey gets chosen, and a registered one would swallow that key
         # press before the dialog could capture it.
-        self._show_startup_dialog()
+        if not self.cfg.get("setup_done"):
+            self._show_settings_dialog()
 
         hotkey_thread = threading.Thread(target=self._hotkey_loop, daemon=True)
         hotkey_thread.start()
