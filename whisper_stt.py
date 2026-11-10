@@ -143,6 +143,44 @@ def parse_hotkey(hotkey_str: str) -> tuple[int, int]:
     return mods, vk
 
 
+VK_NAMES = {vk: name.lower() for name, vk in VK_MAP.items()}
+
+# Left/right modifier virtual keys, as GetAsyncKeyState reports them, mapped to
+# the RegisterHotKey flag they stand for.
+_MODIFIER_FLAGS = {
+    0xA0: MOD_MAP["shift"], 0xA1: MOD_MAP["shift"],
+    0xA2: MOD_MAP["ctrl"], 0xA3: MOD_MAP["ctrl"],
+    0xA4: MOD_MAP["alt"], 0xA5: MOD_MAP["alt"],
+    0x5B: MOD_MAP["win"], 0x5C: MOD_MAP["win"],
+}
+# Generic Shift/Ctrl/Alt codes, which is what Tk hands over for a modifier press.
+_GENERIC_MODIFIER_VKS = {0x10, 0x11, 0x12}
+
+
+def mods_from_vks(vks) -> int:
+    """Fold a list of held modifier virtual keys into RegisterHotKey flags."""
+    mods = 0
+    for vk in vks:
+        mods |= _MODIFIER_FLAGS.get(vk, 0)
+    return mods
+
+
+def format_hotkey(mods: int, vk: int) -> str | None:
+    """Turn a captured key press back into the config string, e.g. 'ctrl+alt+r'.
+
+    Returns None when the key has no name in VK_MAP, or when a bare letter,
+    digit or space would be bound with no modifier: that would swallow the key
+    everywhere on the system. Function keys alone are fine.
+    """
+    name = VK_NAMES.get(vk)
+    if name is None:
+        return None
+    if not mods and not (0x70 <= vk <= 0x7B):
+        return None
+    parts = [m for m in ("ctrl", "alt", "shift", "win") if mods & MOD_MAP[m]]
+    return "+".join([*parts, name])
+
+
 KEYEVENTF_KEYUP = 0x0002
 INPUT_KEYBOARD = 1
 
@@ -1283,7 +1321,7 @@ class WhisperSTT:
 
         # Center on screen
         root.update_idletasks()
-        w, h = 420, 360
+        w, h = 420, 385
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -1298,8 +1336,45 @@ class WhisperSTT:
         hk_frame.pack(fill="x", pady=4)
         ttk.Label(hk_frame, text="Hotkey:").pack(side="left")
         hotkey_var = tk.StringVar(value=self.cfg["hotkey"])
-        hotkey_entry = ttk.Entry(hk_frame, textvariable=hotkey_var, width=20)
-        hotkey_entry.pack(side="right")
+        # Click, then press the combination. Tk's keycode on Windows is the
+        # virtual key, so this does not depend on the keyboard layout.
+        hotkey_button = ttk.Button(hk_frame, textvariable=hotkey_var, width=22)
+        hotkey_button.pack(side="right")
+        hotkey_hint = ttk.Label(frame, text="Click the hotkey to change it",
+                                foreground="gray")
+        hotkey_hint.pack(anchor="e")
+        capture = {"previous": None}
+
+        def end_capture(value, hint):
+            root.unbind("<KeyPress>")
+            hotkey_var.set(value)
+            hotkey_hint.config(text=hint)
+            capture["previous"] = None
+
+        def on_capture_key(event):
+            vk = event.keycode
+            if vk in _GENERIC_MODIFIER_VKS or vk in _MODIFIER_FLAGS:
+                return "break"  # wait for the key that completes the combination
+            if vk == 0x1B:  # Escape
+                end_capture(capture["previous"], "Click the hotkey to change it")
+                return "break"
+            combo = format_hotkey(mods_from_vks(_held_modifiers()), vk)
+            if combo is None:
+                hotkey_hint.config(text="Not supported. Hold Ctrl, Alt, Shift or Win "
+                                        "with a letter, digit, F-key or Space")
+                return "break"
+            end_capture(combo, "Click the hotkey to change it")
+            return "break"
+
+        def start_capture():
+            if capture["previous"] is not None:
+                return
+            capture["previous"] = hotkey_var.get()
+            hotkey_var.set("Press the keys...")
+            hotkey_hint.config(text="Esc to cancel")
+            root.bind("<KeyPress>", on_capture_key)
+
+        hotkey_button.config(command=start_capture)
 
         # No microphone picker here on purpose: Windows already owns that
         # choice, and asking at launch made people pick a device before they
@@ -1338,6 +1413,9 @@ class WhisperSTT:
         ).pack(pady=(6, 0))
 
         def on_ok():
+            # Closing mid-capture keeps the hotkey that was there before.
+            if capture["previous"] is not None:
+                hotkey_var.set(capture["previous"])
             # Save settings
             self.cfg["hotkey"] = hotkey_var.get().strip()
             self.cfg["language"] = lang_var.get()
@@ -1347,7 +1425,7 @@ class WhisperSTT:
                      f"lang={self.cfg['language']}")
             root.destroy()
 
-        ttk.Button(frame, text="Demarrer", command=on_ok).pack(pady=(10, 0))
+        ttk.Button(frame, text="Start", command=on_ok).pack(pady=(10, 0))
 
         root.protocol("WM_DELETE_WINDOW", on_ok)
         root.mainloop()
@@ -1381,6 +1459,11 @@ class WhisperSTT:
 
         self._load_engine()
 
+        # The dialog comes before the hotkey is registered: it is where the
+        # hotkey gets chosen, and a registered one would swallow that key
+        # press before the dialog could capture it.
+        self._show_startup_dialog()
+
         hotkey_thread = threading.Thread(target=self._hotkey_loop, daemon=True)
         hotkey_thread.start()
 
@@ -1391,7 +1474,6 @@ class WhisperSTT:
             menu=self._build_menu(),
         )
         log.info(f"Ready! Hold {self.cfg['hotkey']} to record, release to transcribe.")
-        self._show_startup_dialog()
         self.tray.run()
 
 

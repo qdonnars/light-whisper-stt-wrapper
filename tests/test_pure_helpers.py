@@ -5,7 +5,15 @@ import array
 import pytest
 
 import whisper_stt
-from whisper_stt import _find_by_name, _is_virtual_mic, load_config, parse_hotkey, resample
+from whisper_stt import (
+    _find_by_name,
+    _is_virtual_mic,
+    format_hotkey,
+    load_config,
+    mods_from_vks,
+    parse_hotkey,
+    resample,
+)
 
 # ─── parse_hotkey ────────────────────────────────────────────────────────────
 
@@ -37,6 +45,37 @@ def test_unknown_key_yields_no_virtual_key():
     mods, vk = parse_hotkey("ctrl+quux")
     assert mods == MOD_CTRL
     assert vk == 0
+
+
+# ─── hotkey capture ──────────────────────────────────────────────────────────
+
+
+def test_captured_hotkey_round_trips_through_the_parser():
+    combo = format_hotkey(MOD_CTRL | MOD_ALT, 0x52)
+    assert combo == "ctrl+alt+r"
+    assert parse_hotkey(combo) == (MOD_CTRL | MOD_ALT, 0x52)
+
+
+def test_default_hotkey_is_formatted_like_the_config():
+    assert format_hotkey(MOD_WIN, 0x59) == "win+y"
+
+
+def test_left_and_right_modifiers_fold_together():
+    # LShift, RCtrl, LWin
+    assert mods_from_vks([0xA0, 0xA3, 0x5B]) == MOD_SHIFT | MOD_CTRL | MOD_WIN
+
+
+def test_bare_letter_is_refused():
+    """Binding plain Y would eat every Y typed on the machine."""
+    assert format_hotkey(0, 0x59) is None
+
+
+def test_bare_function_key_is_allowed():
+    assert format_hotkey(0, 0x78) == "f9"
+
+
+def test_key_outside_the_map_is_refused():
+    assert format_hotkey(MOD_CTRL, 0x2D) is None  # Insert
 
 
 # ─── resample ────────────────────────────────────────────────────────────────
